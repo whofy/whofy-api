@@ -1,0 +1,227 @@
+import re
+
+from bson import ObjectId
+from bson.errors import InvalidId
+from fastapi import APIRouter, HTTPException, Query
+
+from mongDB.mongo import get_db
+from sources.shared.enrich import detect_experience, detect_work_type, extract_required_skills
+from sources.shared.normalize import strip_html
+
+router = APIRouter()
+
+_TAG_RE = re.compile(r"<[a-zA-Z/][^>]*>")
+
+_SPAM_RE = re.compile(
+    r"(?:please mention the word|tag [A-Za-z0-9+/=]{10,}|"
+    r"this is a beta feature to avoid spam|"
+    r"companies can search these words)",
+    re.IGNORECASE,
+)
+
+
+def _clean_description(desc: str) -> str:
+    if not desc:
+        return desc
+    if _TAG_RE.search(desc):
+        desc = strip_html(desc)
+    lines = desc.split("\n")
+    cleaned = [l for l in lines if not _SPAM_RE.search(l)]
+    return "\n".join(cleaned).strip()
+
+
+def _guess_domain(company: str) -> str:
+    slug = re.sub(r"[^a-z0-9]", "", company.lower())
+    if not slug:
+        return ""
+    return f"{slug}.com"
+
+
+def serialize_job(doc: dict, matched_skills: list[str] | None = None) -> dict:
+    domain = doc.get("company_domain", "")
+    if not domain:
+        domain = _guess_domain(doc.get("company", ""))
+
+    title = doc.get("title", "")
+    location = doc.get("location", "Not specified")
+    # work_type/experience_level/required_skills are computed once at
+    # ingestion time from the FULL (untruncated) posting text and stored on
+    # the doc (see sources/shared/enrich.py) — required_skills is already
+    # baked into the stored description there too, so filtering is a plain
+    # Mongo query and search indexes the skill terms. Fallback to on-the-fly
+    # detection (against the short display text) only covers stray docs that
+    # somehow bypassed ingestion.
+    desc = _clean_description(doc.get("description", ""))
+    work_type = doc.get("work_type") or detect_work_type(title, location, desc)
+    experience = doc.get("experience_level") or detect_experience(title, desc)
+    required_skills = doc.get("required_skills")
+    if required_skills is None:
+        required_skills = extract_required_skills(title, desc)
+
+    job = {
+        "id": str(doc["_id"]),
+        "title": title,
+        "company": doc.get("company", ""),
+        "location": location,
+        "description": desc,
+        "applyUrl": doc.get("apply_url", ""),
+        "postedAt": doc.get("posted_at") or None,
+        "source": doc.get("source", ""),
+        "workType": work_type,
+        "experience": experience,
+        "requiredSkills": required_skills,
+        "logoUrl": f"https://www.google.com/s2/favicons?domain={domain}&sz=128" if domain else None,
+    }
+    if matched_skills is not None:
+        job["matchedSkills"] = matched_skills
+    return job
+
+
+def _build_filter(
+    source: str | None,
+    company: str | None,
+    location: str | None,
+    work_type: str | None = None,
+    experience: str | None = None,
+) -> dict:
+    filt = {}
+    if source:
+        vals = [s.strip() for s in source.split(",") if s.strip()]
+        if vals:
+            filt["source"] = {"$in": vals} if len(vals) > 1 else vals[0]
+    if company:
+        vals = [s.strip() for s in company.split(",") if s.strip()]
+        if vals:
+            filt["company"] = {"$in": vals} if len(vals) > 1 else vals[0]
+    if location:
+        vals = [s.strip() for s in location.split(",") if s.strip()]
+        if vals:
+            filt["location"] = {"$in": vals} if len(vals) > 1 else vals[0]
+    if work_type:
+        vals = [s.strip() for s in work_type.split(",") if s.strip()]
+        if vals:
+            filt["work_type"] = {"$in": vals} if len(vals) > 1 else vals[0]
+    if experience:
+        vals = [s.strip() for s in experience.split(",") if s.strip()]
+        if vals:
+            filt["experience_level"] = {"$in": vals} if len(vals) > 1 else vals[0]
+    return filt
+
+
+@router.get("/api/matches")
+def get_matches(
+    limit: int = Query(200, ge=1, le=1000),
+    skills: str = Query(None, description="Comma-separated skills to rank matches by"),
+    source: str = Query(None),
+    company: str = Query(None),
+    location: str = Query(None),
+    type: str = Query(None, description="Comma-separated work types (Remote/Hybrid/On-site)"),
+    experience: str = Query(None, description="Comma-separated experience levels"),
+):
+    db = get_db()
+    skill_list = [s.strip() for s in skills.split(",") if s.strip()] if skills else []
+    base_filter = _build_filter(source, company, location, type, experience)
+
+    if not skill_list:
+        docs = db.jobs.find(base_filter).sort("last_seen_at", -1).limit(limit)
+        return [serialize_job(doc) for doc in docs]
+
+    query = {**base_filter, "$text": {"$search": " ".join(skill_list)}}
+    candidates = list(
+        db.jobs.find(query, {"score": {"$meta": "textScore"}})
+        .sort([("score", {"$meta": "textScore"})])
+        .limit(limit * 3)
+    )
+
+    scored = []
+    for doc in candidates:
+        haystack = f"{doc.get('title', '')} {doc.get('description', '')}".lower()
+        matched = [s for s in skill_list if s.lower() in haystack]
+        scored.append((doc, matched))
+
+    scored.sort(key=lambda pair: pair[0].get("last_seen_at") or "", reverse=True)
+    scored.sort(key=lambda pair: len(pair[1]), reverse=True)
+
+    return [serialize_job(doc, matched) for doc, matched in scored[:limit]]
+
+
+_WORD_RE = re.compile(r"[a-z0-9+#.]+")
+
+
+@router.get("/api/search")
+def search_jobs(
+    q: str = Query(..., min_length=2, description="Search query"),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    db = get_db()
+    # $text does an OR across terms, so "react developer" would rank in any
+    # doc containing just "developer" — cast a wide net with $text, then
+    # require most/all query tokens to actually appear before returning it.
+    candidates = list(
+        db.jobs.find(
+            {"$text": {"$search": q}},
+            {"score": {"$meta": "textScore"}},
+        )
+        .sort([("score", {"$meta": "textScore"})])
+        .limit(max(limit * 5, 500))
+    )
+
+    tokens = _WORD_RE.findall(q.lower())
+    if not tokens:
+        return [serialize_job(doc) for doc in candidates[:limit]]
+
+    min_matches = len(tokens) if len(tokens) <= 3 else len(tokens) - 1
+
+    scored = []
+    for doc in candidates:
+        title_l = doc.get("title", "").lower()
+        text_l = f"{title_l} {doc.get('description', '').lower()}"
+        title_hits = sum(1 for t in tokens if t in title_l)
+        total_hits = sum(1 for t in tokens if t in text_l)
+        if total_hits < min_matches:
+            continue
+        scored.append((doc, title_hits, total_hits, doc.get("score", 0)))
+
+    if not scored:
+        # Nothing hit the strict bar (e.g. a typo) — fall back to raw $text
+        # ranking rather than showing an empty results page.
+        return [serialize_job(doc) for doc in candidates[:limit]]
+
+    scored.sort(key=lambda t: (t[1], t[2], t[3]), reverse=True)
+    return [serialize_job(doc) for doc, *_ in scored[:limit]]
+
+
+@router.get("/api/locations")
+def get_locations():
+    db = get_db()
+    values = [v for v in db.jobs.distinct("location") if v and v.strip()]
+    return sorted(values)
+
+
+@router.get("/api/companies")
+def get_companies():
+    db = get_db()
+    values = [v for v in db.jobs.distinct("company", {"company_domain": {"$exists": True, "$ne": ""}}) if v and v.strip()]
+    return sorted(values)
+
+
+@router.get("/api/sources")
+def get_sources():
+    db = get_db()
+    values = [v for v in db.jobs.distinct("source") if v and v.strip()]
+    return sorted(values)
+
+
+@router.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    try:
+        oid = ObjectId(job_id)
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid job id")
+
+    db = get_db()
+    doc = db.jobs.find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return serialize_job(doc)

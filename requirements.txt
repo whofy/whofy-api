@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+pymongo
+pydantic
+pydantic-settings
+python-dotenv
+python-multipart
+python-jose[cryptography]
+authlib
+httpx
+requests
+pymupdf
+python-docx
+beautifulsoup4
+google-genai
