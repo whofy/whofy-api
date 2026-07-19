@@ -111,7 +111,8 @@ def _build_filter(
 
 @router.get("/api/matches")
 def get_matches(
-    limit: int = Query(200, ge=1, le=1000),
+    limit: int = Query(50, ge=1, le=1000),
+    skip: int = Query(0, ge=0),
     skills: str = Query(None, description="Comma-separated skills to rank matches by"),
     source: str = Query(None),
     company: str = Query(None),
@@ -124,10 +125,21 @@ def get_matches(
     base_filter = _build_filter(source, company, location, type, experience)
 
     if not skill_list:
-        docs = db.jobs.find(base_filter).sort("last_seen_at", -1).limit(limit)
-        return [serialize_job(doc) for doc in docs]
+        total = db.jobs.count_documents(base_filter)
+        if not base_filter:
+            pipeline = [{"$sample": {"size": limit}}]
+            docs = list(db.jobs.aggregate(pipeline))
+        else:
+            docs = list(db.jobs.find(base_filter).sort("posted_at", -1).skip(skip).limit(limit))
+        return {
+            "jobs": [serialize_job(doc) for doc in docs],
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+        }
 
     query = {**base_filter, "$text": {"$search": " ".join(skill_list)}}
+    total = db.jobs.count_documents(query)
     candidates = list(
         db.jobs.find(query, {"score": {"$meta": "textScore"}})
         .sort([("score", {"$meta": "textScore"})])
@@ -135,8 +147,14 @@ def get_matches(
     )
 
     scored = rank_by_skills(candidates, skill_list)
+    page = scored[skip:skip + limit]
 
-    return [serialize_job(doc, matched) for doc, matched in scored[:limit]]
+    return {
+        "jobs": [serialize_job(doc, matched) for doc, matched in page],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+    }
 
 
 @router.get("/api/search")
