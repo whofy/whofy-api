@@ -1,5 +1,6 @@
 import io
 import json
+import os
 
 import fitz  # PyMuPDF
 from docx import Document
