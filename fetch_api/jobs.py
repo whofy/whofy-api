@@ -4,7 +4,8 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import APIRouter, HTTPException, Query
 
-from mongDB.mongo import get_db
+from db.mongo import get_db
+from matching.ranker import rank_by_skills, rank_by_search_query
 from sources.shared.enrich import detect_experience, detect_work_type, extract_required_skills
 from sources.shared.normalize import strip_html
 
@@ -133,19 +134,9 @@ def get_matches(
         .limit(limit * 3)
     )
 
-    scored = []
-    for doc in candidates:
-        haystack = f"{doc.get('title', '')} {doc.get('description', '')}".lower()
-        matched = [s for s in skill_list if s.lower() in haystack]
-        scored.append((doc, matched))
-
-    scored.sort(key=lambda pair: pair[0].get("last_seen_at") or "", reverse=True)
-    scored.sort(key=lambda pair: len(pair[1]), reverse=True)
+    scored = rank_by_skills(candidates, skill_list)
 
     return [serialize_job(doc, matched) for doc, matched in scored[:limit]]
-
-
-_WORD_RE = re.compile(r"[a-z0-9+#.]+")
 
 
 @router.get("/api/search")
@@ -154,9 +145,6 @@ def search_jobs(
     limit: int = Query(200, ge=1, le=1000),
 ):
     db = get_db()
-    # $text does an OR across terms, so "react developer" would rank in any
-    # doc containing just "developer" — cast a wide net with $text, then
-    # require most/all query tokens to actually appear before returning it.
     candidates = list(
         db.jobs.find(
             {"$text": {"$search": q}},
@@ -165,30 +153,8 @@ def search_jobs(
         .sort([("score", {"$meta": "textScore"})])
         .limit(max(limit * 5, 500))
     )
-
-    tokens = _WORD_RE.findall(q.lower())
-    if not tokens:
-        return [serialize_job(doc) for doc in candidates[:limit]]
-
-    min_matches = len(tokens) if len(tokens) <= 3 else len(tokens) - 1
-
-    scored = []
-    for doc in candidates:
-        title_l = doc.get("title", "").lower()
-        text_l = f"{title_l} {doc.get('description', '').lower()}"
-        title_hits = sum(1 for t in tokens if t in title_l)
-        total_hits = sum(1 for t in tokens if t in text_l)
-        if total_hits < min_matches:
-            continue
-        scored.append((doc, title_hits, total_hits, doc.get("score", 0)))
-
-    if not scored:
-        # Nothing hit the strict bar (e.g. a typo) — fall back to raw $text
-        # ranking rather than showing an empty results page.
-        return [serialize_job(doc) for doc in candidates[:limit]]
-
-    scored.sort(key=lambda t: (t[1], t[2], t[3]), reverse=True)
-    return [serialize_job(doc) for doc, *_ in scored[:limit]]
+    final_docs = rank_by_search_query(candidates, q)
+    return [serialize_job(doc) for doc in final_docs[:limit]]
 
 
 @router.get("/api/locations")

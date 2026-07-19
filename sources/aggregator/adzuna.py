@@ -1,11 +1,11 @@
-import os
 import requests
 from sources.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
 from sources.shared.normalize import full_text, strip_html
 from sources.shared.storage import save_jobs
+from config.settings import settings
 
-ADZUNA_APP_ID = os.environ.get("ADZUNA_APP_ID")
-ADZUNA_APP_KEY = os.environ.get("ADZUNA_APP_KEY")
+ADZUNA_APP_ID = settings.adzuna_app_id
+ADZUNA_APP_KEY = settings.adzuna_app_key
 ADZUNA_API = "https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
 
 # Countries to search (Adzuna supports these)

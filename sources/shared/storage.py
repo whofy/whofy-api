@@ -1,10 +1,11 @@
-import os
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from pymongo import MongoClient, UpdateOne
 
-MONGODB_URI = os.environ.get("MONGODB_URI")
+from config.settings import settings
+
+MONGODB_URI = settings.mongodb_uri
 DB_NAME = "whofy"
 JOBS_COLLECTION = "jobs"
 DEFAULT_SOURCE_CAP = 7000

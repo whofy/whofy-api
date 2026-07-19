@@ -1,11 +1,11 @@
 import io
 import json
-import os
 
 import fitz  # PyMuPDF
 from docx import Document
 from google import genai
 from google.genai import types
+from config.settings import settings
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB, matches Dropzone.jsx's stated limit
@@ -68,7 +68,7 @@ def _extract_docx_text(content: bytes) -> str:
 
 
 def structure_resume(text: str) -> dict:
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = settings.gemini_api_key
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY environment variable is not set")
 

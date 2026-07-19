@@ -1,9 +1,9 @@
-import os
 import requests
 from sources.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
 from sources.shared.storage import save_jobs
+from config.settings import settings
 
-JOOBLE_API_KEY = os.environ.get("JOOBLE_API_KEY")
+JOOBLE_API_KEY = settings.jooble_api_key
 JOOBLE_API = "https://jooble.org/api/{api_key}"
 
 SEARCH_QUERIES = [
