@@ -1,3 +1,4 @@
+import re
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
@@ -8,14 +9,20 @@ from config.settings import settings
 MONGODB_URI = settings.mongodb_uri
 DB_NAME = "whofy"
 JOBS_COLLECTION = "jobs"
-DEFAULT_SOURCE_CAP = 7000
-EXPIRY_DAYS = 5
+DEFAULT_SOURCE_CAP = 10000
+EXPIRY_DAYS = 30
+MAX_AGE_DAYS = 30
 
 
 def get_client() -> MongoClient:
     if not MONGODB_URI:
         raise RuntimeError("MONGODB_URI environment variable is not set")
     return MongoClient(MONGODB_URI)
+
+
+def _fingerprint(title: str, company: str) -> str:
+    raw = f"{title}||{company}".lower()
+    return re.sub(r"[^a-z0-9|]", "", raw)
 
 
 def is_link_alive(url: str) -> bool:
@@ -41,9 +48,29 @@ def filter_dead_links(jobs: list[dict]) -> tuple[list[dict], int]:
     return alive, dead_count
 
 
+def _is_too_old(posted_at: str) -> bool:
+    if not posted_at:
+        return False
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+        posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+        if posted.tzinfo is None:
+            posted = posted.replace(tzinfo=timezone.utc)
+        return posted < cutoff
+    except (ValueError, TypeError):
+        return False
+
+
 def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> dict:
     if not jobs:
         return {"source": source, "upserted": 0, "modified": 0, "capped": False}
+
+    before = len(jobs)
+    jobs = [j for j in jobs if not _is_too_old(j.get("posted_at", ""))]
+    too_old = before - len(jobs)
+
+    for job in jobs:
+        job["fingerprint"] = _fingerprint(job.get("title", ""), job.get("company", ""))
 
     capped = False
     if len(jobs) > cap:
@@ -56,10 +83,23 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
     db = client[DB_NAME]
     collection = db[JOBS_COLLECTION]
 
+    fingerprints = [j["fingerprint"] for j in jobs]
+    existing = set()
+    if fingerprints:
+        cursor = collection.find(
+            {"fingerprint": {"$in": fingerprints}, "source": {"$ne": source}},
+            {"fingerprint": 1},
+        )
+        existing = {doc["fingerprint"] for doc in cursor}
+
     now = datetime.now(timezone.utc).isoformat()
+    skipped = 0
 
     operations = []
     for job in jobs:
+        if job["fingerprint"] in existing:
+            skipped += 1
+            continue
         job["last_seen_at"] = now
         operations.append(
             UpdateOne(
@@ -69,16 +109,23 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
             )
         )
 
-    result = collection.bulk_write(operations, ordered=False)
-    client.close()
-
-    return {
+    result_info = {
         "source": source,
-        "upserted": result.upserted_count,
-        "modified": result.modified_count,
+        "upserted": 0,
+        "modified": 0,
         "capped": capped,
         "total_processed": len(jobs),
+        "cross_source_skipped": skipped,
+        "too_old_skipped": too_old,
     }
+
+    if operations:
+        result = collection.bulk_write(operations, ordered=False)
+        result_info["upserted"] = result.upserted_count
+        result_info["modified"] = result.modified_count
+
+    client.close()
+    return result_info
 
 
 def cleanup_expired_jobs(expiry_days: int = EXPIRY_DAYS) -> int:
@@ -90,6 +137,22 @@ def cleanup_expired_jobs(expiry_days: int = EXPIRY_DAYS) -> int:
     result = collection.delete_many({"last_seen_at": {"$lt": cutoff}})
     client.close()
     return result.deleted_count
+
+
+def ensure_indexes():
+    client = get_client()
+    db = client[DB_NAME]
+    collection = db[JOBS_COLLECTION]
+
+    collection.create_index([("source", 1), ("source_job_id", 1)], unique=True)
+    collection.create_index([("last_seen_at", -1)])
+    collection.create_index([("fingerprint", 1)])
+    collection.create_index([("title", "text"), ("description", "text")])
+    collection.create_index([("work_type", 1)])
+    collection.create_index([("experience_level", 1)])
+
+    client.close()
+    print("Indexes ensured.")
 
 
 def get_collection_stats() -> dict:

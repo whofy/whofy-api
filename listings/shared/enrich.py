@@ -10,10 +10,6 @@ _JUNIOR_RE = re.compile(r"\b(?:junior|jr\.?|associate)\b", re.IGNORECASE)
 _INTERN_RE = re.compile(r"\b(?:intern|internship|trainee|apprentice|co-?op)\b", re.IGNORECASE)
 _ENTRY_RE = re.compile(r"\b(?:entry[\s-]?level|graduate|fresher|new[\s-]?grad)\b", re.IGNORECASE)
 
-# Curated skill vocabulary for regex-based extraction from job postings.
-# Deliberately not calling an LLM per job here — this runs over every job on
-# every ingestion cycle, so it needs to be fast and free. Canonical casing is
-# what gets shown to the user.
 SKILL_VOCAB = [
     "Python", "JavaScript", "TypeScript", "Java", "C++", "C#", "Go", "Golang",
     "Rust", "Ruby", "PHP", "Kotlin", "Swift", "Scala", "R", "MATLAB",
@@ -103,10 +99,6 @@ def extract_required_skills(title: str, description: str) -> list[str]:
 
 
 def bake_required_skills(description: str, required_skills: list[str]) -> str:
-    """Append the extracted skills onto the (short, display) description so
-    they're part of the stored/indexed text — otherwise a skill only
-    mentioned in a section that strip_html() truncated away would be
-    invisible to both the UI and $text search."""
     if not required_skills:
         return description
     block = "Required skills:\n" + "\n".join(f"• {s}" for s in required_skills)

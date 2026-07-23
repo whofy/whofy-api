@@ -6,8 +6,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from db.mongo import get_db
 from matching.ranker import rank_by_skills, rank_by_search_query
-from sources.shared.enrich import detect_experience, detect_work_type, extract_required_skills
-from sources.shared.normalize import strip_html
+from listings.shared.enrich import detect_experience, detect_work_type, extract_required_skills
+from listings.shared.normalize import strip_html
 
 router = APIRouter()
 
@@ -78,6 +78,10 @@ def serialize_job(doc: dict, matched_skills: list[str] | None = None) -> dict:
     return job
 
 
+def _split_param(val: str) -> list[str]:
+    return [s.strip() for s in re.split(r"[,|]", val) if s.strip()]
+
+
 def _build_filter(
     source: str | None,
     company: str | None,
@@ -87,23 +91,23 @@ def _build_filter(
 ) -> dict:
     filt = {}
     if source:
-        vals = [s.strip() for s in source.split(",") if s.strip()]
+        vals = _split_param(source)
         if vals:
             filt["source"] = {"$in": vals} if len(vals) > 1 else vals[0]
     if company:
-        vals = [s.strip() for s in company.split(",") if s.strip()]
+        vals = _split_param(company)
         if vals:
             filt["company"] = {"$in": vals} if len(vals) > 1 else vals[0]
     if location:
-        vals = [s.strip() for s in location.split(",") if s.strip()]
+        vals = _split_param(location)
         if vals:
             filt["location"] = {"$in": vals} if len(vals) > 1 else vals[0]
     if work_type:
-        vals = [s.strip() for s in work_type.split(",") if s.strip()]
+        vals = _split_param(work_type)
         if vals:
             filt["work_type"] = {"$in": vals} if len(vals) > 1 else vals[0]
     if experience:
-        vals = [s.strip() for s in experience.split(",") if s.strip()]
+        vals = _split_param(experience)
         if vals:
             filt["experience_level"] = {"$in": vals} if len(vals) > 1 else vals[0]
     return filt

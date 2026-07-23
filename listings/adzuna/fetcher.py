@@ -1,22 +1,45 @@
 import requests
-from sources.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
-from sources.shared.normalize import full_text, strip_html
-from sources.shared.storage import save_jobs
+from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
+from listings.shared.normalize import full_text, strip_html
+from listings.shared.storage import save_jobs
+from listings.shared.tech_filter import filter_tech_jobs
 from config.settings import settings
 
 ADZUNA_APP_ID = settings.adzuna_app_id
 ADZUNA_APP_KEY = settings.adzuna_app_key
 ADZUNA_API = "https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
 
-# Countries to search (Adzuna supports these)
-COUNTRIES = ["in", "us", "gb"]
+COUNTRIES = ["in", "us", "gb", "ca", "au", "de"]
+
+SEARCH_QUERIES = [
+    "software engineer",
+    "software developer",
+    "frontend developer",
+    "backend developer",
+    "fullstack developer",
+    "data engineer",
+    "data scientist",
+    "devops engineer",
+    "cloud engineer",
+    "machine learning engineer",
+    "QA engineer",
+    "mobile developer",
+    "UI UX designer",
+    "product manager",
+    "cybersecurity analyst",
+    "systems engineer",
+    "web developer",
+    "python developer",
+    "java developer",
+    "react developer",
+]
 
 HEADERS = {
     "User-Agent": "Whofy Job Aggregator (contact: rohanakode12@gmail.com)"
 }
 
 
-def fetch_adzuna_jobs(country: str, max_pages: int = 5) -> list[dict]:
+def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dict]:
     if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
         print("  ADZUNA_APP_ID and ADZUNA_APP_KEY not set, skipping")
         return []
@@ -29,15 +52,14 @@ def fetch_adzuna_jobs(country: str, max_pages: int = 5) -> list[dict]:
             "app_id": ADZUNA_APP_ID,
             "app_key": ADZUNA_APP_KEY,
             "results_per_page": 50,
-            # Adzuna's `what` param ANDs every word together — "software
-            # developer intern fresher" as one query matches almost nothing
-            # (verified: 1 total result for India). `what_or` matches ANY of
-            # the words instead, which is what we actually want here.
-            "what_or": "software developer intern fresher junior engineer",
+            "what": query,
+            "category": "it-jobs",
         }
 
         try:
             resp = requests.get(url, params=params, headers=HEADERS, timeout=30)
+            if resp.status_code == 400:
+                break
             resp.raise_for_status()
         except requests.RequestException as e:
             print(f"  Error fetching Adzuna ({country}) page {page}: {e}")
@@ -75,21 +97,38 @@ def fetch_adzuna_jobs(country: str, max_pages: int = 5) -> list[dict]:
 
 
 def main():
+    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
+        print("ADZUNA_APP_ID and ADZUNA_APP_KEY not set, skipping Adzuna.")
+        return
+
     all_jobs = []
+    seen_ids = set()
 
     for country in COUNTRIES:
-        print(f"Fetching Adzuna jobs ({country.upper()})...")
-        jobs = fetch_adzuna_jobs(country)
-        print(f"  -> {len(jobs)} jobs found")
-        all_jobs.extend(jobs)
+        for query in SEARCH_QUERIES:
+            print(f"Fetching Adzuna jobs ({country.upper()}, '{query}')...")
+            jobs = fetch_adzuna_jobs(country, query, max_pages=5)
+            for job in jobs:
+                if job["source_job_id"] not in seen_ids:
+                    seen_ids.add(job["source_job_id"])
+                    all_jobs.append(job)
+            print(f"  -> {len(jobs)} fetched, {len(all_jobs)} unique total")
 
-    print(f"\nTotal jobs fetched: {len(all_jobs)}")
+            if len(all_jobs) >= 7000:
+                break
+        if len(all_jobs) >= 7000:
+            break
+
+    print(f"\nTotal unique jobs fetched: {len(all_jobs)}")
+
+    all_jobs = filter_tech_jobs(all_jobs)
+    print(f"After tech filter: {len(all_jobs)}")
 
     if all_jobs:
         result = save_jobs(all_jobs, source="adzuna")
         print(f"Saved to MongoDB: {result}")
     else:
-        print("No jobs to save (set ADZUNA_APP_ID and ADZUNA_APP_KEY to enable).")
+        print("No jobs to save.")
 
 
 if __name__ == "__main__":

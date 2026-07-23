@@ -7,7 +7,6 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = None
     adzuna_app_id: Optional[str] = None
     adzuna_app_key: Optional[str] = None
-    jooble_api_key: Optional[str] = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -1,22 +1,28 @@
 import requests
-from sources.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
-from sources.shared.normalize import extract_bullets, first_paragraph
-from sources.shared.storage import save_jobs
+from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
+from listings.shared.normalize import extract_bullets, first_paragraph
+from listings.shared.storage import save_jobs
+from listings.shared.tech_filter import filter_tech_jobs
 
 LEVER_API = "https://api.lever.co/v0/postings/{company}?mode=json"
 
 COMPANIES = [
-    {"name": "Spotify", "slug": "spotify", "domain": "spotify.com"},
-    {"name": "Palantir", "slug": "palantir", "domain": "palantir.com"},
     {"name": "Gopuff", "slug": "gopuff", "domain": "gopuff.com"},
+    {"name": "Palantir", "slug": "palantir", "domain": "palantir.com"},
+    {"name": "Spotify", "slug": "spotify", "domain": "spotify.com"},
+    {"name": "LogRocket", "slug": "logrocket", "domain": "logrocket.com"},
+    {"name": "Tinybird", "slug": "tinybird", "domain": "tinybird.co"},
+    {"name": "Outreach", "slug": "outreach", "domain": "outreach.io"},
+    {"name": "Cloudinary", "slug": "cloudinary", "domain": "cloudinary.com"},
+    {"name": "Toptal", "slug": "toptal", "domain": "toptal.com"},
+    {"name": "JumpCloud", "slug": "jumpcloud", "domain": "jumpcloud.com"},
+    {"name": "StackBlitz", "slug": "stackblitz", "domain": "stackblitz.com"},
 ]
 
 HEADERS = {
     "User-Agent": "Whofy Job Aggregator (contact: rohanakode12@gmail.com)"
 }
 
-# Lever exposes an explicit workplaceType on many postings — a structured
-# signal beats regex-guessing from text when it's present.
 WORKPLACE_TYPE_MAP = {
     "on-site": "On-site",
     "onsite": "On-site",
@@ -29,12 +35,16 @@ def fetch_lever_jobs(company: dict) -> list[dict]:
     url = LEVER_API.format(company=company["slug"])
     try:
         resp = requests.get(url, headers=HEADERS, timeout=30)
+        if resp.status_code == 404:
+            return []
         resp.raise_for_status()
     except requests.RequestException as e:
         print(f"  Error fetching {company['name']}: {e}")
         return []
 
     raw_jobs = resp.json()
+    if not raw_jobs:
+        return []
     print(f"  -> {len(raw_jobs)} jobs found")
 
     normalized = []
@@ -42,12 +52,6 @@ def fetch_lever_jobs(company: dict) -> list[dict]:
         categories = job.get("categories", {})
         location = categories.get("location", "Not specified")
 
-        # Lever splits postings into a plain-text intro (descriptionPlain)
-        # and separate bulleted sections (lists[] — e.g. "Responsibilities",
-        # "Requirements", each with its own HTML content). The display
-        # description only uses the intro + first list (keeps job cards
-        # short), but detection needs to see every list — the tech-stack
-        # requirements often live in a later section, not the first one.
         description_plain = job.get("descriptionPlain", "")
         intro = first_paragraph(description_plain)
         lists = job.get("lists") or []
@@ -90,6 +94,9 @@ def main():
         all_jobs.extend(jobs)
 
     print(f"\nTotal jobs fetched: {len(all_jobs)}")
+
+    all_jobs = filter_tech_jobs(all_jobs)
+    print(f"After tech filter: {len(all_jobs)}")
 
     if all_jobs:
         result = save_jobs(all_jobs, source="lever")
