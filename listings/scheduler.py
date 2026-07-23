@@ -10,6 +10,8 @@ _stop_event = threading.Event()
 def _run_loop():
     from listings.run_all import run_ingestion
 
+    _stop_event.wait(INTERVAL_HOURS * 3600)
+
     while not _stop_event.is_set():
         try:
             print(f"\n[Scheduler] Starting ingestion at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
