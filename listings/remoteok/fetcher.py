@@ -1,7 +1,8 @@
 import requests
-from sources.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
-from sources.shared.normalize import full_text, strip_html
-from sources.shared.storage import save_jobs
+from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
+from listings.shared.normalize import full_text, strip_html
+from listings.shared.storage import save_jobs
+from listings.shared.tech_filter import filter_tech_jobs
 
 REMOTEOK_API = "https://remoteok.com/api"
 
@@ -19,7 +20,6 @@ def fetch_remoteok_jobs() -> list[dict]:
         return []
 
     raw_jobs = resp.json()
-    # First item is a metadata/legal notice, skip it
     if raw_jobs and isinstance(raw_jobs[0], dict) and "id" not in raw_jobs[0]:
         raw_jobs = raw_jobs[1:]
 
@@ -27,10 +27,6 @@ def fetch_remoteok_jobs() -> list[dict]:
 
     normalized = []
     for job in raw_jobs:
-        # Deliberately NOT including RemoteOK's `tags` field here — many
-        # listings (esp. recruiting-agency spam postings) tag themselves with
-        # every buzzword under the sun, which was gaming skill-based ranking
-        # (see routes/jobs.py) by matching totally unrelated roles.
         raw_description = job.get("description", "")
         description = strip_html(raw_description)
         detection_text = full_text(raw_description)
@@ -59,6 +55,9 @@ def main():
     jobs = fetch_remoteok_jobs()
 
     print(f"\nTotal jobs fetched: {len(jobs)}")
+
+    jobs = filter_tech_jobs(jobs)
+    print(f"After tech filter: {len(jobs)}")
 
     if jobs:
         result = save_jobs(jobs, source="remoteok")

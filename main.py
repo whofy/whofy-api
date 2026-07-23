@@ -1,4 +1,4 @@
-import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,8 +8,17 @@ from config.settings import settings
 from fetch_api.jobs import router as jobs_router
 from parsing.resume import router as resume_router
 from chatbot.router import router as chat_router
+from listings.scheduler import start_scheduler, stop_scheduler
 
-app = FastAPI(title="Whofy API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+
+app = FastAPI(title="Whofy API", lifespan=lifespan)
 app.include_router(jobs_router)
 app.include_router(resume_router)
 app.include_router(chat_router)
