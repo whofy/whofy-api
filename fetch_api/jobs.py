@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timezone, timedelta
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -82,12 +83,22 @@ def _split_param(val: str) -> list[str]:
     return [s.strip() for s in re.split(r"[,|]", val) if s.strip()]
 
 
+def _posted_cutoff(posted: str) -> str | None:
+    mapping = {"today": 1, "week": 7, "month": 30}
+    days = mapping.get(posted)
+    if days is None:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    return cutoff.isoformat()
+
+
 def _build_filter(
     source: str | None,
     company: str | None,
     location: str | None,
     work_type: str | None = None,
     experience: str | None = None,
+    posted: str | None = None,
 ) -> dict:
     filt = {}
     if source:
@@ -110,6 +121,10 @@ def _build_filter(
         vals = _split_param(experience)
         if vals:
             filt["experience_level"] = {"$in": vals} if len(vals) > 1 else vals[0]
+    if posted:
+        cutoff = _posted_cutoff(posted)
+        if cutoff:
+            filt["posted_at"] = {"$gte": cutoff}
     return filt
 
 
@@ -123,18 +138,15 @@ def get_matches(
     location: str = Query(None),
     type: str = Query(None, description="Comma-separated work types (Remote/Hybrid/On-site)"),
     experience: str = Query(None, description="Comma-separated experience levels"),
+    posted: str = Query(None, description="Date range: today, week, or month"),
 ):
     db = get_db()
     skill_list = [s.strip() for s in skills.split(",") if s.strip()] if skills else []
-    base_filter = _build_filter(source, company, location, type, experience)
+    base_filter = _build_filter(source, company, location, type, experience, posted)
 
     if not skill_list:
         total = db.jobs.count_documents(base_filter)
-        if not base_filter:
-            pipeline = [{"$sample": {"size": limit}}]
-            docs = list(db.jobs.aggregate(pipeline))
-        else:
-            docs = list(db.jobs.find(base_filter).sort("posted_at", -1).skip(skip).limit(limit))
+        docs = list(db.jobs.find(base_filter).sort("posted_at", -1).skip(skip).limit(limit))
         return {
             "jobs": [serialize_job(doc) for doc in docs],
             "total": total,
@@ -144,10 +156,11 @@ def get_matches(
 
     query = {**base_filter, "$text": {"$search": " ".join(skill_list)}}
     total = db.jobs.count_documents(query)
+    fetch_size = skip + limit * 3
     candidates = list(
         db.jobs.find(query, {"score": {"$meta": "textScore"}})
         .sort([("score", {"$meta": "textScore"})])
-        .limit(limit * 3)
+        .limit(fetch_size)
     )
 
     scored = rank_by_skills(candidates, skill_list)

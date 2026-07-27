@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     mongodb_uri: Optional[str] = None
     cors_origins: str = "http://localhost:5173"
-    gemini_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
     adzuna_app_id: Optional[str] = None
     adzuna_app_key: Optional[str] = None
 

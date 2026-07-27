@@ -12,4 +12,4 @@ requests
 pymupdf
 python-docx
 beautifulsoup4
-google-genai
+groq

@@ -9,7 +9,7 @@ from config.settings import settings
 MONGODB_URI = settings.mongodb_uri
 DB_NAME = "whofy"
 JOBS_COLLECTION = "jobs"
-DEFAULT_SOURCE_CAP = 10000
+DEFAULT_SOURCE_CAP = 20000
 EXPIRY_DAYS = 30
 MAX_AGE_DAYS = 30
 

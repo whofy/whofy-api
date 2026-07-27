@@ -7,7 +7,7 @@ from listings.shared.tech_filter import filter_tech_jobs
 REMOTEOK_API = "https://remoteok.com/api"
 
 HEADERS = {
-    "User-Agent": "Whofy Job Aggregator (contact: rohanakode12@gmail.com)"
+    "User-Agent": "Whofy Job Aggregator (contact: whofyteam@gmail.com)"
 }
 
 
