@@ -1,9 +1,7 @@
-import json
-from google import genai
-from google.genai import types
+from groq import Groq, APIError, RateLimitError
 from config.settings import settings
 
-CHAT_MODEL = "gemini-3.1-flash-lite"
+CHAT_MODEL = "llama-3.3-70b-versatile"
 
 SYSTEM_PROMPT = """You are Whofy's friendly assistant — a chatbot embedded in a job-matching platform called Whofy.
 
@@ -24,7 +22,7 @@ Here is how Whofy works — use this knowledge to answer user questions:
 
 **How resume matching works (technical process):**
 1. The resume file is uploaded and text is extracted (PyMuPDF for PDFs, python-docx for DOCX files)
-2. The extracted text is sent to Google's Gemini AI which identifies: skills, location, experience level, education, and a professional summary
+2. The extracted text is sent to AI which identifies: skills, location, experience level, education, and a professional summary
 3. The extracted skills are used to search the jobs database using text-based matching
 4. Jobs are scored by how many of the user's skills appear in the job title and description
 5. Results are sorted by match count (most matching skills first), with ties broken by recency
@@ -61,26 +59,31 @@ Guidelines for your responses:
 
 
 def get_chat_response(message: str, history: list[dict]) -> str:
-    api_key = settings.gemini_api_key
+    api_key = settings.groq_api_key
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
+        print("[Chatbot] ERROR: GROQ_API_KEY is not set in .env")
+        raise RuntimeError("GROQ_API_KEY environment variable is not set")
 
-    client = genai.Client(api_key=api_key)
+    client = Groq(api_key=api_key)
 
-    contents = []
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for msg in history:
-        role = "user" if msg.get("from") == "user" else "model"
-        contents.append(types.Content(role=role, parts=[types.Part(text=msg.get("text", ""))]))
+        role = "user" if msg.get("from") == "user" else "assistant"
+        messages.append({"role": role, "content": msg.get("text", "")})
+    messages.append({"role": "user", "content": message})
 
-    contents.append(types.Content(role="user", parts=[types.Part(text=message)]))
-
-    response = client.models.generate_content(
-        model=CHAT_MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
+    try:
+        response = client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=messages,
             temperature=0.7,
-            max_output_tokens=500,
-        ),
-    )
-    return response.text
+            max_tokens=500,
+        )
+    except RateLimitError:
+        print("[Chatbot] ERROR: Groq API rate limit reached. Daily limit of 14,400 requests may be exhausted. Resets at midnight UTC.")
+        raise RuntimeError("Chat is temporarily unavailable — API rate limit reached. Please try again later.")
+    except APIError as e:
+        print(f"[Chatbot] ERROR: Groq API error — {e}")
+        raise RuntimeError(f"Chat failed: {e}")
+
+    return response.choices[0].message.content

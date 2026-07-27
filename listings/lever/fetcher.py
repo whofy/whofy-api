@@ -20,7 +20,7 @@ COMPANIES = [
 ]
 
 HEADERS = {
-    "User-Agent": "Whofy Job Aggregator (contact: rohanakode12@gmail.com)"
+    "User-Agent": "Whofy Job Aggregator (contact: whofyteam@gmail.com)"
 }
 
 WORKPLACE_TYPE_MAP = {

@@ -173,10 +173,13 @@ COMPANIES = [
     {"name": "Turing", "board_token": "turing", "domain": "turing.com"},
     {"name": "Via", "board_token": "via", "domain": "via.com"},
     {"name": "Waymo", "board_token": "waymo", "domain": "waymo.com"},
+    {"name": "Anduril", "board_token": "andurilindustries", "domain": "anduril.com"},
+    {"name": "Block", "board_token": "block", "domain": "block.xyz"},
+    {"name": "Tanium", "board_token": "tanium", "domain": "tanium.com"},
 ]
 
 HEADERS = {
-    "User-Agent": "Whofy Job Aggregator (contact: rohanakode12@gmail.com)"
+    "User-Agent": "Whofy Job Aggregator (contact: whofyteam@gmail.com)"
 }
 
 
