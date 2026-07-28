@@ -146,7 +146,7 @@ def get_matches(
 
     if not skill_list:
         total = db.jobs.count_documents(base_filter)
-        docs = list(db.jobs.find(base_filter).sort("posted_at", -1).skip(skip).limit(limit))
+        docs = list(db.jobs.find(base_filter).sort([("posted_at", -1), ("_id", 1)]).skip(skip).limit(limit))
         return {
             "jobs": [serialize_job(doc) for doc in docs],
             "total": total,
