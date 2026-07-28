@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timezone, timedelta
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -6,8 +7,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from db.mongo import get_db
 from matching.ranker import rank_by_skills, rank_by_search_query
-from sources.shared.enrich import detect_experience, detect_work_type, extract_required_skills
-from sources.shared.normalize import strip_html
+from listings.shared.enrich import detect_experience, detect_work_type, extract_required_skills
+from listings.shared.normalize import strip_html
 
 router = APIRouter()
 
@@ -78,34 +79,52 @@ def serialize_job(doc: dict, matched_skills: list[str] | None = None) -> dict:
     return job
 
 
+def _split_param(val: str) -> list[str]:
+    return [s.strip() for s in re.split(r"[,|]", val) if s.strip()]
+
+
+def _posted_cutoff(posted: str) -> str | None:
+    mapping = {"today": 1, "week": 7, "month": 30}
+    days = mapping.get(posted)
+    if days is None:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    return cutoff.isoformat()
+
+
 def _build_filter(
     source: str | None,
     company: str | None,
     location: str | None,
     work_type: str | None = None,
     experience: str | None = None,
+    posted: str | None = None,
 ) -> dict:
     filt = {}
     if source:
-        vals = [s.strip() for s in source.split(",") if s.strip()]
+        vals = _split_param(source)
         if vals:
             filt["source"] = {"$in": vals} if len(vals) > 1 else vals[0]
     if company:
-        vals = [s.strip() for s in company.split(",") if s.strip()]
+        vals = _split_param(company)
         if vals:
             filt["company"] = {"$in": vals} if len(vals) > 1 else vals[0]
     if location:
-        vals = [s.strip() for s in location.split(",") if s.strip()]
+        vals = _split_param(location)
         if vals:
             filt["location"] = {"$in": vals} if len(vals) > 1 else vals[0]
     if work_type:
-        vals = [s.strip() for s in work_type.split(",") if s.strip()]
+        vals = _split_param(work_type)
         if vals:
             filt["work_type"] = {"$in": vals} if len(vals) > 1 else vals[0]
     if experience:
-        vals = [s.strip() for s in experience.split(",") if s.strip()]
+        vals = _split_param(experience)
         if vals:
             filt["experience_level"] = {"$in": vals} if len(vals) > 1 else vals[0]
+    if posted:
+        cutoff = _posted_cutoff(posted)
+        if cutoff:
+            filt["posted_at"] = {"$gte": cutoff}
     return filt
 
 
@@ -119,18 +138,15 @@ def get_matches(
     location: str = Query(None),
     type: str = Query(None, description="Comma-separated work types (Remote/Hybrid/On-site)"),
     experience: str = Query(None, description="Comma-separated experience levels"),
+    posted: str = Query(None, description="Date range: today, week, or month"),
 ):
     db = get_db()
     skill_list = [s.strip() for s in skills.split(",") if s.strip()] if skills else []
-    base_filter = _build_filter(source, company, location, type, experience)
+    base_filter = _build_filter(source, company, location, type, experience, posted)
 
     if not skill_list:
         total = db.jobs.count_documents(base_filter)
-        if not base_filter:
-            pipeline = [{"$sample": {"size": limit}}]
-            docs = list(db.jobs.aggregate(pipeline))
-        else:
-            docs = list(db.jobs.find(base_filter).sort("posted_at", -1).skip(skip).limit(limit))
+        docs = list(db.jobs.find(base_filter).sort("posted_at", -1).skip(skip).limit(limit))
         return {
             "jobs": [serialize_job(doc) for doc in docs],
             "total": total,
@@ -140,10 +156,11 @@ def get_matches(
 
     query = {**base_filter, "$text": {"$search": " ".join(skill_list)}}
     total = db.jobs.count_documents(query)
+    fetch_size = skip + limit * 3
     candidates = list(
         db.jobs.find(query, {"score": {"$meta": "textScore"}})
         .sort([("score", {"$meta": "textScore"})])
-        .limit(limit * 3)
+        .limit(fetch_size)
     )
 
     scored = rank_by_skills(candidates, skill_list)

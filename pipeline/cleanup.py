@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from sources.shared.storage import cleanup_expired_jobs, get_collection_stats
+from listings.shared.storage import cleanup_expired_jobs, get_collection_stats
 
 
 def main():

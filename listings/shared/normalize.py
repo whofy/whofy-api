@@ -10,7 +10,6 @@ MIN_PARA_CHARS = 40
 def _unescape(raw: str) -> str:
     if not raw:
         return ""
-    # Some sources double- or triple-encode HTML entities, so loop until stable.
     unescaped = raw
     for _ in range(5):
         prev = unescaped
@@ -21,10 +20,6 @@ def _unescape(raw: str) -> str:
 
 
 def _parse_lines(raw: str) -> list[str]:
-    """Block-level text lines from raw HTML, in document order, with no
-    truncation applied — the full posting, not the summarized version shown
-    in the UI. Feed this to detection/extraction (see enrich.py), which
-    needs to see sections like "Requirements" that _summarize() cuts off."""
     unescaped = _unescape(raw)
     if not unescaped:
         return []
@@ -47,19 +42,11 @@ def _flatten(raw: str) -> str:
 
 
 def full_text(raw: str) -> str:
-    """Complete posting text, untruncated. Always use this (never
-    strip_html()) as the input to work-type/experience/skill detection —
-    strip_html() intentionally throws away everything past the first bullet
-    list, which is exactly where "Requirements"/tech-stack sections often
-    live."""
     lines = _parse_lines(raw)
     return "\n".join(lines) if lines else _flatten(raw)
 
 
 def strip_html(raw: str) -> str:
-    """Short display description for the UI: one intro paragraph plus the
-    first bullet list found. Use full_text() instead for anything that needs
-    the complete posting (detection, search indexing)."""
     if not raw:
         return ""
     lines = _parse_lines(raw)
@@ -91,9 +78,6 @@ def extract_bullets(html: str, max_bullets: int = MAX_BULLETS) -> list[str]:
 
 
 def _summarize(lines: list[str]) -> list[str]:
-    """Keep one substantial intro paragraph plus the first bullet list found
-    — full postings run thousands of words of company boilerplate, benefits,
-    and legal text that isn't worth showing in a job card."""
     out = []
     took_para = False
     bullets = 0
@@ -109,7 +93,7 @@ def _summarize(lines: list[str]) -> list[str]:
             in_bullets = True
         else:
             if in_bullets:
-                break  # first bullet block ended — that's the summary, stop
+                break
             if not took_para and len(line) >= MIN_PARA_CHARS:
                 out.append(line)
                 took_para = True
