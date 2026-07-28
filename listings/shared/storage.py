@@ -3,6 +3,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from pymongo import MongoClient, UpdateOne
+import certifi
 
 from config.settings import settings
 
@@ -17,7 +18,7 @@ MAX_AGE_DAYS = 30
 def get_client() -> MongoClient:
     if not MONGODB_URI:
         raise RuntimeError("MONGODB_URI environment variable is not set")
-    return MongoClient(MONGODB_URI)
+    return MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
 
 
 def _fingerprint(title: str, company: str) -> str:

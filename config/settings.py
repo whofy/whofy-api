@@ -1,5 +1,10 @@
+import os
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Get the directory where this settings.py file is located, then go up one level to the project root
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
 
 class Settings(BaseSettings):
     mongodb_uri: Optional[str] = None
@@ -8,6 +13,6 @@ class Settings(BaseSettings):
     adzuna_app_id: Optional[str] = None
     adzuna_app_key: Optional[str] = None
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=ENV_FILE, extra="ignore")
 
 settings = Settings()
