@@ -10,7 +10,7 @@ from listings.scraping.weworkremotely.fetcher import main as wwr_main
 from listings.scraping.workday.fetcher import main as workday_main
 from listings.himalayas.fetcher import main as himalayas_main
 from listings.hackernews.fetcher import main as hackernews_main
-from listings.shared.storage import cleanup_expired_jobs, ensure_indexes, get_collection_stats
+from listings.shared.storage import cleanup_expired_jobs, cleanup_non_english_jobs, ensure_indexes, get_collection_stats
 
     
 
@@ -45,6 +45,8 @@ def run_ingestion():
     print(f"\n--- Cleanup ---")
     deleted = cleanup_expired_jobs()
     print(f"Expired jobs removed: {deleted}")
+    non_eng = cleanup_non_english_jobs()
+    print(f"Non-English jobs removed: {non_eng}")
 
     print(f"\n--- Stats ---")
     stats = get_collection_stats()

@@ -40,9 +40,12 @@ def _guess_domain(company: str) -> str:
 
 
 def serialize_job(doc: dict, matched_skills: list[str] | None = None) -> dict:
-    domain = doc.get("company_domain", "")
-    if not domain:
-        domain = _guess_domain(doc.get("company", ""))
+    logo_url = doc.get("logo_url")
+    if not logo_url:
+        domain = doc.get("company_domain", "")
+        if not domain:
+            domain = _guess_domain(doc.get("company", ""))
+        logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128" if domain else None
 
     title = doc.get("title", "")
     location = doc.get("location", "Not specified")
@@ -72,15 +75,15 @@ def serialize_job(doc: dict, matched_skills: list[str] | None = None) -> dict:
         "workType": work_type,
         "experience": experience,
         "requiredSkills": required_skills,
-        "logoUrl": f"https://www.google.com/s2/favicons?domain={domain}&sz=128" if domain else None,
+        "logoUrl": logo_url,
     }
     if matched_skills is not None:
         job["matchedSkills"] = matched_skills
     return job
 
 
-def _split_param(val: str) -> list[str]:
-    return [s.strip() for s in re.split(r"[,|]", val) if s.strip()]
+def _split_param(val: str, sep: str = r"[,|]") -> list[str]:
+    return [s.strip() for s in re.split(sep, val) if s.strip()]
 
 
 def _posted_cutoff(posted: str) -> str | None:
@@ -110,9 +113,12 @@ def _build_filter(
         if vals:
             filt["company"] = {"$in": vals} if len(vals) > 1 else vals[0]
     if location:
-        vals = _split_param(location)
+        vals = _split_param(location, sep=r"\|")
         if vals:
-            filt["location"] = {"$in": vals} if len(vals) > 1 else vals[0]
+            if len(vals) == 1:
+                filt["location"] = {"$regex": re.escape(vals[0]), "$options": "i"}
+            else:
+                filt["$or"] = [{"location": {"$regex": re.escape(v), "$options": "i"}} for v in vals]
     if work_type:
         vals = _split_param(work_type)
         if vals:
@@ -192,17 +198,49 @@ def search_jobs(
     return [serialize_job(doc) for doc in final_docs[:limit]]
 
 
+_JUNK_LOC_RE = re.compile(
+    r"https?:|&#|\.com|\.io|\.dev|\.net\b|you&#|we&#|I&#|^n/a$"
+    r"|[{}()\[\]]|\.{2,}|[?!]"
+    r"|you'll|we're|you're|i'm|i don"
+    r"|&amp|&quot|&lt|&gt|CRUD|Multiple "
+    r"|^\.NET$| OR | & | EMEA"
+    r"|^[A-Z]{2,4}\.[A-Z]{2}\.",
+    re.IGNORECASE,
+)
+
+
+def _is_valid_location(loc: str) -> bool:
+    if not loc or len(loc) < 2 or len(loc) > 60:
+        return False
+    if "remote" in loc.lower():
+        return False
+    if _JUNK_LOC_RE.search(loc):
+        return False
+    if sum(1 for c in loc if c == ' ') > 8:
+        return False
+    return True
+
+
 @router.get("/api/locations")
 def get_locations():
     db = get_db()
-    values = [v for v in db.jobs.distinct("location") if v and v.strip()]
-    return sorted(values)
+    raw = [v for v in db.jobs.distinct("location") if v and v.strip()]
+    locations = set()
+    for loc in raw:
+        if ";" in loc:
+            for part in loc.split(";"):
+                part = part.strip()
+                if _is_valid_location(part):
+                    locations.add(part)
+        elif _is_valid_location(loc):
+            locations.add(loc)
+    return sorted(locations)
 
 
 @router.get("/api/companies")
 def get_companies():
     db = get_db()
-    values = [v for v in db.jobs.distinct("company", {"company_domain": {"$exists": True, "$ne": ""}}) if v and v.strip()]
+    values = [v for v in db.jobs.distinct("company") if v and v.strip()]
     return sorted(values)
 
 
