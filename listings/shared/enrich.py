@@ -276,7 +276,12 @@ SKILL_VOCAB = [
     "Site Reliability", "SRE", "Observability", "Monitoring",
     "Technical Writing", "Documentation", "API Documentation",
 ]
-_SKILL_RES = [(skill, re.compile(r"\b" + re.escape(skill) + r"\b", re.IGNORECASE)) for skill in SKILL_VOCAB]
+_UNIQUE_SKILLS = list(dict.fromkeys(SKILL_VOCAB))
+_SKILL_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(s) for s in sorted(_UNIQUE_SKILLS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+_SKILL_CANONICAL = {s.lower(): s for s in _UNIQUE_SKILLS}
 
 MAX_EXTRACTED_SKILLS = 15
 
@@ -335,10 +340,14 @@ def detect_experience(title: str, description: str) -> str:
 
 def extract_required_skills(title: str, description: str) -> list[str]:
     haystack = f"{title} {description}"
+    matches = _SKILL_PATTERN.findall(haystack)
+    seen = set()
     found = []
-    for skill, pattern in _SKILL_RES:
-        if pattern.search(haystack):
-            found.append(skill)
+    for m in matches:
+        canonical = _SKILL_CANONICAL.get(m.lower())
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            found.append(canonical)
         if len(found) >= MAX_EXTRACTED_SKILLS:
             break
     return found
