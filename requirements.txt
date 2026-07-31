@@ -9,6 +9,7 @@ python-jose[cryptography]
 authlib
 httpx
 requests
+PyJWT[crypto]
 pymupdf
 python-docx
 beautifulsoup4
