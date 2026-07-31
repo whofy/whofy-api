@@ -10,9 +10,9 @@ from listings.shared.storage import save_jobs
 from listings.shared.tech_filter import filter_tech_jobs
 
 API_URL = "https://himalayas.app/jobs/api"
-PAGE_SIZE = 10
+PAGE_SIZE = 100
 MAX_AGE_DAYS = 30
-PAGE_DELAY = 3
+PAGE_DELAY = 1
 MAX_RETRIES = 3
 
 HEADERS = {
@@ -119,6 +119,9 @@ def fetch_himalayas_jobs() -> list[dict]:
     return all_jobs
 
 
+BATCH_SIZE = 2000
+
+
 def main():
     print("Fetching jobs from Himalayas...")
     all_jobs = fetch_himalayas_jobs()
@@ -127,11 +130,14 @@ def main():
     all_jobs = filter_tech_jobs(all_jobs)
     print(f"After tech filter: {len(all_jobs)}")
 
-    if all_jobs:
-        result = save_jobs(all_jobs, source="himalayas")
-        print(f"Saved to MongoDB: {result}")
-    else:
+    if not all_jobs:
         print("No jobs to save.")
+        return
+
+    for i in range(0, len(all_jobs), BATCH_SIZE):
+        batch = all_jobs[i:i + BATCH_SIZE]
+        result = save_jobs(batch, source="himalayas")
+        print(f"Saved batch {i // BATCH_SIZE + 1} ({len(batch)} jobs): {result}")
 
 
 if __name__ == "__main__":
