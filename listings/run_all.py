@@ -8,6 +8,7 @@ from listings.remoteok.fetcher import main as remoteok_main
 from listings.ashby.fetcher import main as ashby_main
 from listings.scraping.weworkremotely.fetcher import main as wwr_main
 from listings.scraping.workday.fetcher import main as workday_main
+from listings.scraping.linkedin.fetcher import main as linkedin_main
 from listings.himalayas.fetcher import main as himalayas_main
 from listings.hackernews.fetcher import main as hackernews_main
 from listings.shared.storage import cleanup_expired_jobs, cleanup_non_english_jobs, ensure_indexes, get_collection_stats
@@ -31,6 +32,7 @@ def run_ingestion():
         ("Ashby", ashby_main),
         ("We Work Remotely", wwr_main),
         ("Workday", workday_main),
+        ("LinkedIn", linkedin_main),
         ("Himalayas", himalayas_main),
         ("Hacker News", hackernews_main),
     ]
