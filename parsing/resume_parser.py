@@ -1,10 +1,12 @@
+import asyncio
 import io
 import json
 import os
 
 import fitz  # PyMuPDF
 from docx import Document
-from groq import Groq, APIError, RateLimitError
+from groq import AsyncGroq, APIError, RateLimitError
+from fastapi import HTTPException
 from config.settings import settings
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
@@ -67,16 +69,16 @@ def _extract_docx_text(content: bytes) -> str:
     return "\n".join(p.text for p in doc.paragraphs)
 
 
-def structure_resume(text: str) -> dict:
+async def structure_resume(text: str) -> dict:
     api_key = settings.groq_api_key
     if not api_key:
         print("[Resume Parser] ERROR: GROQ_API_KEY is not set in .env")
-        raise RuntimeError("GROQ_API_KEY environment variable is not set")
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY environment variable is not set")
 
-    client = Groq(api_key=api_key)
+    client = AsyncGroq(api_key=api_key)
 
     try:
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model=PARSE_MODEL,
             messages=[
                 {"role": "user", "content": PROMPT.format(text=text[:15000])}
@@ -85,17 +87,17 @@ def structure_resume(text: str) -> dict:
             temperature=0.2,
         )
     except RateLimitError:
-        print("[Resume Parser] ERROR: Groq API rate limit reached. Daily limit of 14,400 requests may be exhausted. Resets at midnight UTC.")
-        raise RuntimeError("Resume parsing is temporarily unavailable — API rate limit reached. Please try again later.")
+        print("[Resume Parser] ERROR: Groq API rate limit reached.")
+        raise HTTPException(status_code=429, detail="Resume parsing is temporarily unavailable — API rate limit reached. Please try again later.")
     except APIError as e:
         print(f"[Resume Parser] ERROR: Groq API error — {e}")
-        raise RuntimeError(f"Resume parsing failed: {e}")
+        raise HTTPException(status_code=503, detail=f"Resume parsing failed: {e}")
 
     return json.loads(response.choices[0].message.content)
 
 
-def parse_resume(filename: str, content: bytes) -> dict:
-    text = extract_text(filename, content)
+async def parse_resume(filename: str, content: bytes) -> dict:
+    text = await asyncio.to_thread(extract_text, filename, content)
     if not text or not text.strip():
         raise EmptyResumeText("Could not read any text from this file.")
-    return structure_resume(text)
+    return await structure_resume(text)

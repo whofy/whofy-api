@@ -16,3 +16,16 @@ def get_client() -> MongoClient:
 
 def get_db():
     return get_client()[DB_NAME]
+
+
+@lru_cache
+def get_async_client():
+    from motor.motor_asyncio import AsyncIOMotorClient
+    uri = settings.mongodb_uri
+    if not uri:
+        raise RuntimeError("MONGODB_URI environment variable is not set")
+    return AsyncIOMotorClient(uri, tlsCAFile=certifi.where())
+
+
+def get_async_db():
+    return get_async_client()[DB_NAME]

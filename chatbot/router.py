@@ -12,11 +12,8 @@ class ChatMessage(BaseModel):
 
 
 @router.post("/api/chat")
-def chat(body: ChatMessage):
+async def chat(body: ChatMessage):
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
-    try:
-        reply = get_chat_response(body.message, body.history)
-        return {"reply": reply}
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    reply = await get_chat_response(body.message, body.history)
+    return {"reply": reply}

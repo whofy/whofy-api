@@ -9,14 +9,9 @@ from fetch_api.jobs import router as jobs_router
 from fetch_api.saved_jobs import router as saved_jobs_router
 from parsing.resume import router as resume_router
 from chatbot.router import router as chat_router
-from listings.scheduler import start_scheduler, stop_scheduler
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    start_scheduler()
     yield
-    stop_scheduler()
 
 
 app = FastAPI(title="Whofy API", lifespan=lifespan)

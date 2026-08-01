@@ -5,8 +5,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import APIRouter, HTTPException, Query
 
-from db.mongo import get_db
-from matching.ranker import rank_by_skills, rank_by_search_query
+from db.mongo import get_async_db
 from listings.shared.enrich import detect_experience, detect_work_type, extract_required_skills
 from listings.shared.normalize import strip_html
 
@@ -135,7 +134,7 @@ def _build_filter(
 
 
 @router.get("/api/matches")
-def get_matches(
+async def get_matches(
     limit: int = Query(50, ge=1, le=1000),
     skip: int = Query(0, ge=0),
     skills: str = Query(None, description="Comma-separated skills to rank matches by"),
@@ -146,13 +145,13 @@ def get_matches(
     experience: str = Query(None, description="Comma-separated experience levels"),
     posted: str = Query(None, description="Date range: today, week, or month"),
 ):
-    db = get_db()
+    db = get_async_db()
     skill_list = [s.strip() for s in skills.split(",") if s.strip()] if skills else []
     base_filter = _build_filter(source, company, location, type, experience, posted)
 
     if not skill_list:
-        total = db.jobs.count_documents(base_filter)
-        docs = list(db.jobs.find(base_filter).sort([("posted_at", -1), ("_id", 1)]).skip(skip).limit(limit))
+        total = await db.jobs.count_documents(base_filter)
+        docs = await db.jobs.find(base_filter).sort([("posted_at", -1), ("_id", 1)]).skip(skip).to_list(length=limit)
         return {
             "jobs": [serialize_job(doc) for doc in docs],
             "total": total,
@@ -161,19 +160,34 @@ def get_matches(
         }
 
     query = {**base_filter, "$text": {"$search": " ".join(skill_list)}}
-    total = db.jobs.count_documents(query)
-    fetch_size = skip + limit * 3
-    candidates = list(
-        db.jobs.find(query, {"score": {"$meta": "textScore"}})
-        .sort([("score", {"$meta": "textScore"})])
-        .limit(fetch_size)
-    )
+    total = await db.jobs.count_documents(query)
 
-    scored = rank_by_skills(candidates, skill_list)
-    page = scored[skip:skip + limit]
+    pipeline = [
+        {"$match": query},
+        {"$addFields": {
+            "matched_skills": {
+                "$filter": {
+                    "input": skill_list,
+                    "as": "skill",
+                    "cond": {
+                        "$or": [
+                            {"$gte": [{"$indexOfCP": [{"$toLower": {"$ifNull": ["$title", ""]}}, {"$toLower": "$$skill"}]}, 0]},
+                            {"$gte": [{"$indexOfCP": [{"$toLower": {"$ifNull": ["$description", ""]}}, {"$toLower": "$$skill"}]}, 0]}
+                        ]
+                    }
+                }
+            }
+        }},
+        {"$addFields": {"match_count": {"$size": "$matched_skills"}}},
+        {"$sort": {"match_count": -1, "last_seen_at": -1, "_id": 1}},
+        {"$skip": skip},
+        {"$limit": limit}
+    ]
+
+    docs = await db.jobs.aggregate(pipeline).to_list(length=limit)
 
     return {
-        "jobs": [serialize_job(doc, matched) for doc, matched in page],
+        "jobs": [serialize_job(doc, doc.get("matched_skills", [])) for doc in docs],
         "total": total,
         "skip": skip,
         "limit": limit,
@@ -181,21 +195,59 @@ def get_matches(
 
 
 @router.get("/api/search")
-def search_jobs(
+async def search_jobs(
     q: str = Query(..., min_length=2, description="Search query"),
     limit: int = Query(200, ge=1, le=1000),
 ):
-    db = get_db()
-    candidates = list(
-        db.jobs.find(
-            {"$text": {"$search": q}},
-            {"score": {"$meta": "textScore"}},
-        )
-        .sort([("score", {"$meta": "textScore"})])
-        .limit(max(limit * 5, 500))
-    )
-    final_docs = rank_by_search_query(candidates, q)
-    return [serialize_job(doc) for doc in final_docs[:limit]]
+    db = get_async_db()
+    
+    # Tokenize the query for strict matching
+    tokens = re.findall(r"[a-z0-9+#.]+", q.lower())
+    if not tokens:
+        docs = await db.jobs.find({"$text": {"$search": q}}).limit(limit).to_list(length=limit)
+        return [serialize_job(doc) for doc in docs]
+
+    min_matches = len(tokens) if len(tokens) <= 3 else len(tokens) - 1
+
+    pipeline = [
+        {"$match": {"$text": {"$search": q}}},
+        {"$addFields": {
+            "score": {"$meta": "textScore"},
+            "title_hits": {
+                "$size": {
+                    "$filter": {
+                        "input": tokens,
+                        "as": "token",
+                        "cond": {"$gte": [{"$indexOfCP": [{"$toLower": {"$ifNull": ["$title", ""]}}, {"$toLower": "$$token"}]}, 0]}
+                    }
+                }
+            },
+            "total_hits": {
+                "$size": {
+                    "$filter": {
+                        "input": tokens,
+                        "as": "token",
+                        "cond": {
+                            "$or": [
+                                {"$gte": [{"$indexOfCP": [{"$toLower": {"$ifNull": ["$title", ""]}}, {"$toLower": "$$token"}]}, 0]},
+                                {"$gte": [{"$indexOfCP": [{"$toLower": {"$ifNull": ["$description", ""]}}, {"$toLower": "$$token"}]}, 0]}
+                            ]
+                        }
+                    }
+                }
+            }
+        }},
+        {"$match": {"total_hits": {"$gte": min_matches}}},
+        {"$sort": {"title_hits": -1, "total_hits": -1, "score": -1, "_id": 1}},
+        {"$limit": limit}
+    ]
+
+    docs = await db.jobs.aggregate(pipeline).to_list(length=limit)
+    if not docs:
+        # Fallback to pure text search if strict matching yielded nothing
+        docs = await db.jobs.find({"$text": {"$search": q}}, {"score": {"$meta": "textScore"}}).sort([("score", {"$meta": "textScore"})]).limit(limit).to_list(length=limit)
+        
+    return [serialize_job(doc) for doc in docs]
 
 
 _JUNK_LOC_RE = re.compile(
@@ -222,9 +274,9 @@ def _is_valid_location(loc: str) -> bool:
 
 
 @router.get("/api/locations")
-def get_locations():
-    db = get_db()
-    raw = [v for v in db.jobs.distinct("location") if v and v.strip()]
+async def get_locations():
+    db = get_async_db()
+    raw = [v for v in await db.jobs.distinct("location") if v and v.strip()]
     locations = set()
     for loc in raw:
         if ";" in loc:
@@ -238,28 +290,28 @@ def get_locations():
 
 
 @router.get("/api/companies")
-def get_companies():
-    db = get_db()
-    values = [v for v in db.jobs.distinct("company") if v and v.strip()]
+async def get_companies():
+    db = get_async_db()
+    values = [v for v in await db.jobs.distinct("company") if v and v.strip()]
     return sorted(values)
 
 
 @router.get("/api/sources")
-def get_sources():
-    db = get_db()
-    values = [v for v in db.jobs.distinct("source") if v and v.strip()]
+async def get_sources():
+    db = get_async_db()
+    values = [v for v in await db.jobs.distinct("source") if v and v.strip()]
     return sorted(values)
 
 
 @router.get("/api/jobs/{job_id}")
-def get_job(job_id: str):
+async def get_job(job_id: str):
     try:
         oid = ObjectId(job_id)
     except InvalidId:
         raise HTTPException(status_code=400, detail="Invalid job id")
 
-    db = get_db()
-    doc = db.jobs.find_one({"_id": oid})
+    db = get_async_db()
+    doc = await db.jobs.find_one({"_id": oid})
     if not doc:
         raise HTTPException(status_code=404, detail="Job not found")
 
