@@ -2,8 +2,10 @@ from datetime import datetime, timezone
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+
+from fetch_api.limiter import limiter
 
 from db.mongo import get_async_db
 from fetch_api.jobs import serialize_job
@@ -17,7 +19,8 @@ class SaveJobRequest(BaseModel):
 
 
 @router.post("/api/saved-jobs")
-async def save_job(req: SaveJobRequest, user_id: str = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def save_job(req: SaveJobRequest, request: Request, user_id: str = Depends(get_current_user)):
     db = get_async_db()
     existing = await db.saved_jobs.find_one({"user_id": user_id, "job_id": req.job_id})
     if existing:
@@ -45,7 +48,8 @@ async def save_job(req: SaveJobRequest, user_id: str = Depends(get_current_user)
 
 
 @router.delete("/api/saved-jobs/{job_id}")
-async def unsave_job(job_id: str, user_id: str = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def unsave_job(job_id: str, request: Request, user_id: str = Depends(get_current_user)):
     db = get_async_db()
     result = await db.saved_jobs.delete_one({"user_id": user_id, "job_id": job_id})
     if result.deleted_count == 0:
@@ -54,7 +58,8 @@ async def unsave_job(job_id: str, user_id: str = Depends(get_current_user)):
 
 
 @router.get("/api/saved-jobs")
-async def get_saved_jobs(user_id: str = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def get_saved_jobs(request: Request, user_id: str = Depends(get_current_user)):
     db = get_async_db()
     saved_docs = await db.saved_jobs.find({"user_id": user_id}).sort("saved_at", -1).to_list(length=1000)
 
@@ -96,7 +101,8 @@ async def get_saved_jobs(user_id: str = Depends(get_current_user)):
 
 
 @router.get("/api/saved-jobs/ids")
-async def get_saved_job_ids(user_id: str = Depends(get_current_user)):
+@limiter.limit("30/minute")
+async def get_saved_job_ids(request: Request, user_id: str = Depends(get_current_user)):
     db = get_async_db()
     saved_docs = await db.saved_jobs.find({"user_id": user_id}, {"job_id": 1}).to_list(length=1000)
     return [doc["job_id"] for doc in saved_docs]

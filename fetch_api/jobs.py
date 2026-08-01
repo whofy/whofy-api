@@ -3,7 +3,8 @@ from datetime import datetime, timezone, timedelta
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fetch_api.limiter import limiter
 
 from db.mongo import get_async_db
 from listings.shared.enrich import detect_experience, detect_work_type, extract_required_skills
@@ -134,7 +135,9 @@ def _build_filter(
 
 
 @router.get("/api/matches")
+@limiter.limit("30/minute")
 async def get_matches(
+    request: Request,
     limit: int = Query(50, ge=1, le=1000),
     skip: int = Query(0, ge=0),
     skills: str = Query(None, description="Comma-separated skills to rank matches by"),
@@ -195,7 +198,9 @@ async def get_matches(
 
 
 @router.get("/api/search")
+@limiter.limit("30/minute")
 async def search_jobs(
+    request: Request,
     q: str = Query(..., min_length=2, description="Search query"),
     limit: int = Query(200, ge=1, le=1000),
     skip: int = Query(0, ge=0),
@@ -276,7 +281,8 @@ def _is_valid_location(loc: str) -> bool:
 
 
 @router.get("/api/locations")
-async def get_locations():
+@limiter.limit("10/minute")
+async def get_locations(request: Request):
     db = get_async_db()
     raw = [v for v in await db.jobs.distinct("location") if v and v.strip()]
     locations = set()
@@ -292,21 +298,24 @@ async def get_locations():
 
 
 @router.get("/api/companies")
-async def get_companies():
+@limiter.limit("10/minute")
+async def get_companies(request: Request):
     db = get_async_db()
     values = [v for v in await db.jobs.distinct("company") if v and v.strip()]
     return sorted(values)
 
 
 @router.get("/api/sources")
-async def get_sources():
+@limiter.limit("10/minute")
+async def get_sources(request: Request):
     db = get_async_db()
     values = [v for v in await db.jobs.distinct("source") if v and v.strip()]
     return sorted(values)
 
 
 @router.get("/api/jobs/{job_id}")
-async def get_job(job_id: str):
+@limiter.limit("60/minute")
+async def get_job(job_id: str, request: Request):
     try:
         oid = ObjectId(job_id)
     except InvalidId:

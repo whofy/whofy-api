@@ -264,6 +264,7 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
             skipped += 1
             continue
         job["last_seen_at"] = now
+        job["lang_checked"] = True
         operations.append(
             UpdateOne(
                 {"source": source, "source_job_id": job["source_job_id"]},
@@ -296,10 +297,13 @@ from concurrent.futures import ProcessPoolExecutor
 
 def _process_batch(docs):
     to_delete = []
+    to_mark = []
     for doc in docs:
         if _is_non_english(doc):
             to_delete.append(doc["_id"])
-    return to_delete
+        else:
+            to_mark.append(doc["_id"])
+    return {"to_delete": to_delete, "to_mark": to_mark}
 
 def cleanup_non_english_jobs() -> int:
     client = get_client()
@@ -312,7 +316,7 @@ def cleanup_non_english_jobs() -> int:
 
     with ProcessPoolExecutor(max_workers=8) as executor:
         futures = []
-        for doc in collection.find({}, {"title": 1, "description": 1}):
+        for doc in collection.find({"lang_checked": {"$ne": True}}, {"title": 1, "description": 1}):
             batch.append(doc)
             if len(batch) >= batch_size:
                 futures.append(executor.submit(_process_batch, batch))
@@ -321,8 +325,11 @@ def cleanup_non_english_jobs() -> int:
             futures.append(executor.submit(_process_batch, batch))
             
         all_to_delete = []
+        all_to_mark = []
         for future in futures:
-            all_to_delete.extend(future.result())
+            res = future.result()
+            all_to_delete.extend(res["to_delete"])
+            all_to_mark.extend(res["to_mark"])
 
     if all_to_delete:
         chunk_size = 1000
@@ -330,6 +337,12 @@ def cleanup_non_english_jobs() -> int:
             chunk = all_to_delete[i:i + chunk_size]
             collection.delete_many({"_id": {"$in": chunk}})
         removed = len(all_to_delete)
+        
+    if all_to_mark:
+        chunk_size = 1000
+        for i in range(0, len(all_to_mark), chunk_size):
+            chunk = all_to_mark[i:i + chunk_size]
+            collection.update_many({"_id": {"$in": chunk}}, {"$set": {"lang_checked": True}})
 
     return removed
 

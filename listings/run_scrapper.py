@@ -52,6 +52,8 @@ heavy_semaphore = threading.Semaphore(2)
 
 def run_source_concurrently(name, fetcher, is_heavy):
     log_prefix.set(name)
+    start_time = time.time()
+    print(f"Started fetching at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
     try:
         if is_heavy:
             with heavy_semaphore:
@@ -60,6 +62,9 @@ def run_source_concurrently(name, fetcher, is_heavy):
             fetcher()
     except Exception as e:
         print(f"ERROR in {name}: {e}")
+    finally:
+        elapsed = time.time() - start_time
+        print(f"Completed in {elapsed:.2f} seconds")
 
 def run_ingestion():
     start = time.time()
