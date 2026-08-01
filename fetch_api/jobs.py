@@ -184,7 +184,7 @@ async def get_matches(
         {"$limit": limit}
     ]
 
-    docs = await db.jobs.aggregate(pipeline).to_list(length=limit)
+    docs = await db.jobs.aggregate(pipeline, allowDiskUse=True).to_list(length=limit)
 
     return {
         "jobs": [serialize_job(doc, doc.get("matched_skills", [])) for doc in docs],
@@ -198,13 +198,14 @@ async def get_matches(
 async def search_jobs(
     q: str = Query(..., min_length=2, description="Search query"),
     limit: int = Query(200, ge=1, le=1000),
+    skip: int = Query(0, ge=0),
 ):
     db = get_async_db()
     
     # Tokenize the query for strict matching
     tokens = re.findall(r"[a-z0-9+#.]+", q.lower())
     if not tokens:
-        docs = await db.jobs.find({"$text": {"$search": q}}).limit(limit).to_list(length=limit)
+        docs = await db.jobs.find({"$text": {"$search": q}}).skip(skip).limit(limit).to_list(length=limit)
         return [serialize_job(doc) for doc in docs]
 
     min_matches = len(tokens) if len(tokens) <= 3 else len(tokens) - 1
@@ -239,13 +240,14 @@ async def search_jobs(
         }},
         {"$match": {"total_hits": {"$gte": min_matches}}},
         {"$sort": {"title_hits": -1, "total_hits": -1, "score": -1, "_id": 1}},
+        {"$skip": skip},
         {"$limit": limit}
     ]
 
-    docs = await db.jobs.aggregate(pipeline).to_list(length=limit)
+    docs = await db.jobs.aggregate(pipeline, allowDiskUse=True).to_list(length=limit)
     if not docs:
         # Fallback to pure text search if strict matching yielded nothing
-        docs = await db.jobs.find({"$text": {"$search": q}}, {"score": {"$meta": "textScore"}}).sort([("score", {"$meta": "textScore"})]).limit(limit).to_list(length=limit)
+        docs = await db.jobs.find({"$text": {"$search": q}}, {"score": {"$meta": "textScore"}}).sort([("score", {"$meta": "textScore"})]).skip(skip).limit(limit).to_list(length=limit)
         
     return [serialize_job(doc) for doc in docs]
 

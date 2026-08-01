@@ -15,3 +15,5 @@ pymupdf
 python-docx
 beautifulsoup4
 groq
+
+langdetect

@@ -12,6 +12,8 @@ from chatbot.router import router as chat_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
+    from db.mongo import get_async_client
+    get_async_client().close()
 
 
 app = FastAPI(title="Whofy API", lifespan=lifespan)

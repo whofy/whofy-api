@@ -60,22 +60,21 @@ def _posted_at(job: dict) -> str:
 
 def fetch_himalayas_jobs() -> list[dict]:
     cutoff = _cutoff_ts()
-    offset = 0
     all_jobs = []
 
-    while True:
-        try:
-            data = _fetch_page(offset)
-        except requests.RequestException as e:
-            print(f"  Error fetching page at offset {offset}: {e}")
-            break
+    try:
+        first_page = _fetch_page(0)
+    except requests.RequestException as e:
+        print(f"  Error fetching initial page: {e}")
+        return []
 
-        jobs = data.get("jobs", [])
-        if not jobs:
-            break
+    jobs = first_page.get("jobs", [])
+    total = first_page.get("totalCount", 0)
 
+    def _process_jobs(jobs_list):
+        processed = []
         hit_old = False
-        for job in jobs:
+        for job in jobs_list:
             pub = job.get("pubDate")
             if pub and int(pub) < cutoff:
                 hit_old = True
@@ -88,7 +87,7 @@ def fetch_himalayas_jobs() -> list[dict]:
             location = _location_from(job)
             required_skills = extract_required_skills(title, detection_text)
 
-            all_jobs.append({
+            processed.append({
                 "source": "himalayas",
                 "source_job_id": f"hml_{job.get('guid', '')}",
                 "title": title,
@@ -102,22 +101,45 @@ def fetch_himalayas_jobs() -> list[dict]:
                 "experience_level": detect_experience(title, detection_text),
                 "required_skills": required_skills,
             })
+        return processed, hit_old
 
-        if hit_old:
-            break
+    first_processed, first_hit_old = _process_jobs(jobs)
+    all_jobs.extend(first_processed)
 
-        total = data.get("totalCount", 0)
-        offset += PAGE_SIZE
-        if offset >= total:
-            break
+    if first_hit_old or total <= PAGE_SIZE:
+        return all_jobs
 
-        if offset % 5000 == 0:
-            print(f"  ... fetched {len(all_jobs)} jobs so far (offset {offset})")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        time.sleep(PAGE_DELAY)
+    offsets = list(range(PAGE_SIZE, total, PAGE_SIZE))
+    
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_offset = {executor.submit(_fetch_page, offset): offset for offset in offsets}
+        
+        for future in as_completed(future_to_offset):
+            offset = future_to_offset[future]
+            try:
+                data = future.result()
+            except requests.RequestException as e:
+                print(f"  Error fetching page at offset {offset}: {e}")
+                continue
+
+            page_jobs = data.get("jobs", [])
+            if not page_jobs:
+                continue
+
+            processed, hit_old = _process_jobs(page_jobs)
+            all_jobs.extend(processed)
+
+            if len(all_jobs) % 5000 < PAGE_SIZE * 4: # roughly log every 5000
+                print(f"  ... fetched ~{len(all_jobs)} jobs so far")
+
+            if hit_old:
+                # Can't cleanly cancel all futures, but we stop processing results
+                executor.shutdown(wait=False, cancel_futures=True)
+                break
 
     return all_jobs
-
 
 BATCH_SIZE = 2000
 

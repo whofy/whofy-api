@@ -278,7 +278,7 @@ SKILL_VOCAB = [
 ]
 _UNIQUE_SKILLS = list(dict.fromkeys(SKILL_VOCAB))
 _SKILL_PATTERN = re.compile(
-    r"\b(?:" + "|".join(re.escape(s) for s in sorted(_UNIQUE_SKILLS, key=len, reverse=True)) + r")\b",
+    r"(?<![a-zA-Z0-9_])(?:" + "|".join(re.escape(s) for s in sorted(_UNIQUE_SKILLS, key=len, reverse=True)) + r")(?![a-zA-Z0-9_+#])",
     re.IGNORECASE,
 )
 _SKILL_CANONICAL = {s.lower(): s for s in _UNIQUE_SKILLS}

@@ -58,14 +58,24 @@ async def get_saved_jobs(user_id: str = Depends(get_current_user)):
     db = get_async_db()
     saved_docs = await db.saved_jobs.find({"user_id": user_id}).sort("saved_at", -1).to_list(length=1000)
 
-    jobs = []
+    oids = []
+    valid_saved_docs = []
     for saved in saved_docs:
         try:
             oid = ObjectId(saved["job_id"])
+            oids.append(oid)
+            valid_saved_docs.append((oid, saved))
         except InvalidId:
             continue
 
-        job_doc = await db.jobs.find_one({"_id": oid})
+    jobs_by_id = {}
+    if oids:
+        job_docs = await db.jobs.find({"_id": {"$in": oids}}).to_list(length=1000)
+        jobs_by_id = {doc["_id"]: doc for doc in job_docs}
+
+    jobs = []
+    for oid, saved in valid_saved_docs:
+        job_doc = jobs_by_id.get(oid)
         if job_doc:
             job = serialize_job(job_doc)
             job["savedAt"] = saved["saved_at"]

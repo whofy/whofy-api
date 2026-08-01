@@ -2,6 +2,9 @@ import asyncio
 import io
 import json
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 import fitz  # PyMuPDF
 from docx import Document
@@ -10,7 +13,7 @@ from fastapi import HTTPException
 from config.settings import settings
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB, matches Dropzone.jsx's stated limit
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 PARSE_MODEL = "llama-3.3-70b-versatile"
 
 RESUME_SCHEMA = {
@@ -86,12 +89,12 @@ async def structure_resume(text: str) -> dict:
             response_format={"type": "json_object"},
             temperature=0.2,
         )
-    except RateLimitError:
-        print("[Resume Parser] ERROR: Groq API rate limit reached.")
+    except RateLimitError as e:
+        logger.error(f"[Resume Parser] ERROR: Groq API rate limit reached — {e}")
         raise HTTPException(status_code=429, detail="Resume parsing is temporarily unavailable — API rate limit reached. Please try again later.")
     except APIError as e:
-        print(f"[Resume Parser] ERROR: Groq API error — {e}")
-        raise HTTPException(status_code=503, detail=f"Resume parsing failed: {e}")
+        logger.error(f"[Resume Parser] ERROR: Groq API error — {e}")
+        raise HTTPException(status_code=503, detail="Resume parsing failed due to an upstream service error. Please try again later.")
 
     return json.loads(response.choices[0].message.content)
 

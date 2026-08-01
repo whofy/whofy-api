@@ -170,5 +170,4 @@ def attach_logos(jobs: list[dict]) -> int:
             job["logo_url"] = logo_url
             attached += 1
 
-    client.close()
     return attached

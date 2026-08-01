@@ -1,6 +1,9 @@
+import logging
 from groq import AsyncGroq, APIError, RateLimitError
 from fastapi import HTTPException
 from config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 CHAT_MODEL = "llama-3.3-70b-versatile"
 
@@ -71,8 +74,8 @@ Guidelines for your responses:
 async def get_chat_response(message: str, history: list[dict]) -> str:
     api_key = settings.groq_api_key
     if not api_key:
-        print("[Chatbot] ERROR: GROQ_API_KEY is not set in .env")
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY environment variable is not set")
+        logger.error("[Chatbot] ERROR: GROQ_API_KEY is not set in .env")
+        raise HTTPException(status_code=500, detail="Configuration error: API key is not set.")
 
     client = AsyncGroq(api_key=api_key)
 
@@ -89,11 +92,11 @@ async def get_chat_response(message: str, history: list[dict]) -> str:
             temperature=0.3,
             max_tokens=500,
         )
-    except RateLimitError:
-        print("[Chatbot] ERROR: Groq API rate limit reached.")
+    except RateLimitError as e:
+        logger.error(f"[Chatbot] ERROR: Groq API rate limit reached — {e}")
         raise HTTPException(status_code=429, detail="Chat is temporarily unavailable — API rate limit reached. Please try again later.")
     except APIError as e:
-        print(f"[Chatbot] ERROR: Groq API error — {e}")
-        raise HTTPException(status_code=503, detail=f"Chat failed: {e}")
+        logger.error(f"[Chatbot] ERROR: Groq API error — {e}")
+        raise HTTPException(status_code=503, detail="Chat failed due to an upstream service error. Please try again later.")
 
     return response.choices[0].message.content

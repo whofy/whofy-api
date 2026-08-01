@@ -1,6 +1,7 @@
 import re
 import time
 from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
@@ -243,14 +244,16 @@ def fetch_workday_jobs(company: dict) -> list[dict]:
 def main():
     all_jobs = []
 
-    for company in COMPANIES:
-        print(f"Fetching jobs for {company['name']}...")
-        try:
-            jobs = fetch_workday_jobs(company)
-            all_jobs.extend(jobs)
-        except Exception as e:
-            print(f"  ERROR: {e}")
-        time.sleep(1)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fetch_workday_jobs, company): company for company in COMPANIES}
+        for future in as_completed(futures):
+            company = futures[future]
+            print(f"Fetching jobs for {company['name']}...")
+            try:
+                jobs = future.result()
+                all_jobs.extend(jobs)
+            except Exception as e:
+                print(f"  ERROR for {company['name']}: {e}")
 
     print(f"\nTotal jobs fetched: {len(all_jobs)}")
 

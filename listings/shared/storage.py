@@ -4,6 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from pymongo import MongoClient, UpdateOne
 import certifi
+try:
+    from langdetect import detect, LangDetectException, DetectorFactory
+    DetectorFactory.seed = 0
+except ImportError:
+    pass
 
 from config.settings import settings
 
@@ -16,14 +21,19 @@ EXPIRY_DAYS = 28
 MAX_AGE_DAYS = 28
 
 
+_client_instance = None
 def get_client() -> MongoClient:
+    global _client_instance
+    if _client_instance is not None:
+        return _client_instance
     if not MONGODB_URI:
         raise RuntimeError("MONGODB_URI environment variable is not set")
-    return MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
+    _client_instance = MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
+    return _client_instance
 
 
-def _fingerprint(title: str, company: str) -> str:
-    raw = f"{title}||{company}".lower()
+def _fingerprint(source: str, source_job_id: str) -> str:
+    raw = f"{source}||{source_job_id}".lower()
     return re.sub(r"[^a-z0-9|]", "", raw)
 
 
@@ -176,19 +186,17 @@ def _normalize_location(raw: str) -> str:
 
 def _is_non_english(job: dict) -> bool:
     title = job.get("title", "")
-    company = job.get("company", "")
     desc = job.get("description", "")[:500]
-    for text in [title, company]:
-        if not text:
-            continue
-        non_latin = sum(1 for c in text if ord(c) > 127 and not c.isspace())
-        if non_latin > 0 and non_latin / max(len(text), 1) > 0.1:
-            return True
-    if desc:
-        non_latin = sum(1 for c in desc if ord(c) > 127 and not c.isspace())
-        if non_latin / max(len(desc), 1) > 0.15:
-            return True
-    return False
+    
+    text = f"{title} {desc}".strip()
+    if not text:
+        return False
+        
+    try:
+        lang = detect(text)
+        return lang != "en"
+    except Exception:
+        return False
 
 
 def _is_too_old(posted_at: str) -> bool:
@@ -225,7 +233,7 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
     logos_attached = attach_logos(jobs)
 
     for job in jobs:
-        job["fingerprint"] = _fingerprint(job.get("title", ""), job.get("company", ""))
+        job["fingerprint"] = _fingerprint(source, job.get("source_job_id", ""))
 
     capped = False
     if len(jobs) > cap:
@@ -281,7 +289,6 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         result_info["upserted"] = result.upserted_count
         result_info["modified"] = result.modified_count
 
-    client.close()
     return result_info
 
 
@@ -296,7 +303,6 @@ def cleanup_non_english_jobs() -> int:
             collection.delete_one({"_id": doc["_id"]})
             removed += 1
 
-    client.close()
     return removed
 
 
@@ -315,7 +321,6 @@ def normalize_existing_locations() -> int:
             collection.update_one({"_id": doc["_id"]}, {"$set": {"location": normalized}})
             updated += 1
 
-    client.close()
     return updated
 
 
@@ -331,7 +336,6 @@ def cleanup_expired_jobs(expiry_days: int = EXPIRY_DAYS) -> int:
             {"added_at": {"$exists": False}, "last_seen_at": {"$lt": cutoff}},
         ]
     })
-    client.close()
     return result.deleted_count
 
 
@@ -341,9 +345,9 @@ def ensure_indexes():
     collection = db[JOBS_COLLECTION]
 
     collection.create_index([("source", 1), ("source_job_id", 1)], unique=True)
+    collection.create_index([("posted_at", -1), ("_id", 1)])
     collection.create_index([("last_seen_at", -1)])
     collection.create_index([("added_at", -1)])
-    collection.create_index([("fingerprint", 1)])
     collection.create_index([("title", "text"), ("description", "text")])
     collection.create_index([("work_type", 1)])
     collection.create_index([("experience_level", 1)])
@@ -351,7 +355,6 @@ def ensure_indexes():
     logos_col = db[LOGOS_COLLECTION]
     logos_col.create_index("company_key", unique=True)
 
-    client.close()
     print("Indexes ensured.")
 
 
@@ -363,7 +366,6 @@ def get_collection_stats() -> dict:
     total = collection.count_documents({})
     pipeline = [{"$group": {"_id": "$source", "count": {"$sum": 1}}}]
     per_source = {doc["_id"]: doc["count"] for doc in collection.aggregate(pipeline)}
-    client.close()
     return {"total_jobs": total, "per_source": per_source}
 
 

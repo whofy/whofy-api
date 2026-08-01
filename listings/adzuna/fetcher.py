@@ -168,6 +168,12 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
     return all_jobs
 
 
+def _fetch_wrapper(country, query):
+    try:
+        return fetch_adzuna_jobs(country, query, max_pages=3)
+    except RateLimitExhausted:
+        return None
+
 def main():
     if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
         print("ADZUNA_APP_ID and ADZUNA_APP_KEY not set, skipping Adzuna.")
@@ -177,24 +183,37 @@ def main():
     seen_ids = set()
     rate_limited = False
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    tasks = []
     for country in COUNTRIES:
-        if rate_limited or len(all_jobs) >= RAW_JOB_CAP:
-            break
         for query in SEARCH_QUERIES:
-            print(f"Fetching Adzuna jobs ({country.upper()}, '{query}')...")
+            tasks.append((country, query))
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_task = {executor.submit(_fetch_wrapper, c, q): (c, q) for c, q in tasks}
+        
+        for future in as_completed(future_to_task):
+            c, q = future_to_task[future]
             try:
-                jobs = fetch_adzuna_jobs(country, query, max_pages=10)
-            except RateLimitExhausted:
+                jobs = future.result()
+            except Exception as e:
+                print(f"  Error fetching Adzuna jobs ({c.upper()}, '{q}'): {e}")
+                continue
+
+            if jobs is None:
                 print("  Stopping early — saving what we have so far. The 24h scheduler will top up next run.")
-                rate_limited = True
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
+            
+            print(f"Fetched Adzuna jobs ({c.upper()}, '{q}') -> {len(jobs)} jobs")
             for job in jobs:
                 if job["source_job_id"] not in seen_ids:
                     seen_ids.add(job["source_job_id"])
                     all_jobs.append(job)
-            print(f"  -> {len(jobs)} fetched, {len(all_jobs)} unique total")
 
             if len(all_jobs) >= RAW_JOB_CAP:
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
     print(f"\nTotal unique jobs fetched: {len(all_jobs)}")

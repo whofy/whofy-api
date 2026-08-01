@@ -1,4 +1,5 @@
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
 from listings.shared.normalize import full_text, strip_html
 from listings.shared.storage import save_jobs
@@ -229,10 +230,16 @@ def fetch_greenhouse_jobs(company: dict) -> list[dict]:
 def main():
     all_jobs = []
 
-    for company in COMPANIES:
-        print(f"Fetching jobs for {company['name']}...")
-        jobs = fetch_greenhouse_jobs(company)
-        all_jobs.extend(jobs)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fetch_greenhouse_jobs, company): company for company in COMPANIES}
+        for future in as_completed(futures):
+            company = futures[future]
+            print(f"Fetching jobs for {company['name']}...")
+            try:
+                jobs = future.result()
+                all_jobs.extend(jobs)
+            except Exception as e:
+                print(f"Error processing {company['name']}: {e}")
 
     print(f"\nTotal jobs fetched: {len(all_jobs)}")
 
