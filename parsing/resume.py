@@ -1,3 +1,4 @@
+import logging
 import os
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -9,6 +10,8 @@ from parsing.resume_parser import (
     UnsupportedFileType,
     parse_resume,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -27,7 +30,7 @@ async def upload_resume(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="File too large. Max 5MB.")
 
     try:
-        resume = parse_resume(file.filename, content)
+        resume = await parse_resume(file.filename, content)
     except UnsupportedFileType:
         raise HTTPException(
             status_code=400,
@@ -37,6 +40,14 @@ async def upload_resume(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=422,
             detail="Could not read any text from this file. If it's a scanned image, try a text-based PDF or DOCX instead.",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Resume parsing failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Resume analysis failed: {e}",
         )
 
     return {"resume": resume}

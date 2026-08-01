@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 pymongo
+motor
 pydantic
 pydantic-settings
 python-dotenv
@@ -9,7 +10,8 @@ python-jose[cryptography]
 authlib
 httpx
 requests
+PyJWT[crypto]
 pymupdf
 python-docx
 beautifulsoup4
-google-genai
+groq
