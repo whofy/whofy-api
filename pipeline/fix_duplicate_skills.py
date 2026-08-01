@@ -9,7 +9,7 @@ load_dotenv()
 
 import re
 from pymongo import UpdateOne
-from mongDB.mongo import get_db
+from db.mongo import get_db
 
 SKILLS_BLOCK_RE = re.compile(
     r"\n{0,3}Required skills:\n(?:• .+\n?)+",

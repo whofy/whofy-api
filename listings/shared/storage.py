@@ -292,16 +292,44 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
     return result_info
 
 
+from concurrent.futures import ProcessPoolExecutor
+
+def _process_batch(docs):
+    to_delete = []
+    for doc in docs:
+        if _is_non_english(doc):
+            to_delete.append(doc["_id"])
+    return to_delete
+
 def cleanup_non_english_jobs() -> int:
     client = get_client()
     db = client[DB_NAME]
     collection = db[JOBS_COLLECTION]
 
     removed = 0
-    for doc in collection.find({}, {"title": 1, "company": 1}):
-        if _is_non_english(doc):
-            collection.delete_one({"_id": doc["_id"]})
-            removed += 1
+    batch_size = 2000
+    batch = []
+
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        futures = []
+        for doc in collection.find({}, {"title": 1, "description": 1}):
+            batch.append(doc)
+            if len(batch) >= batch_size:
+                futures.append(executor.submit(_process_batch, batch))
+                batch = []
+        if batch:
+            futures.append(executor.submit(_process_batch, batch))
+            
+        all_to_delete = []
+        for future in futures:
+            all_to_delete.extend(future.result())
+
+    if all_to_delete:
+        chunk_size = 1000
+        for i in range(0, len(all_to_delete), chunk_size):
+            chunk = all_to_delete[i:i + chunk_size]
+            collection.delete_many({"_id": {"$in": chunk}})
+        removed = len(all_to_delete)
 
     return removed
 
