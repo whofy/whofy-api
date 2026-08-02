@@ -78,7 +78,8 @@ def run_ingestion():
     sources = [
         ("Workday", workday_main, True),
         ("We Work Remotely", wwr_main, False),
-        ("LinkedIn", linkedin_main, False),
+        # LinkedIn temporarily disabled — takes 20+ minutes and was never brought into the shared MP pipeline optimization; needs proper diagnosis before re-enabling.
+        # ("LinkedIn", linkedin_main, False),
         ("Hacker News", hackernews_main, False),
     ]
 
