@@ -14,7 +14,7 @@ from config.settings import settings
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-PARSE_MODEL = "llama-3.3-70b-versatile"
+PARSE_MODEL = "openai/gpt-oss-120b"
 
 RESUME_SCHEMA = {
     "type": "object",
@@ -73,10 +73,10 @@ def _extract_docx_text(content: bytes) -> str:
 
 
 async def structure_resume(text: str) -> dict:
-    api_key = settings.groq_api_key
+    api_key = settings.groq_resume_parser_api_key
     if not api_key:
-        print("[Resume Parser] ERROR: GROQ_API_KEY is not set in .env")
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY environment variable is not set")
+        print("[Resume Parser] ERROR: GROQ_RESUME_PARSER_API_KEY is not set in .env")
+        raise HTTPException(status_code=500, detail="GROQ_RESUME_PARSER_API_KEY environment variable is not set")
 
     client = AsyncGroq(api_key=api_key)
 

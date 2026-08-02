@@ -5,7 +5,7 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-CHAT_MODEL = "llama-3.3-70b-versatile"
+CHAT_MODEL = "openai/gpt-oss-20b"
 
 SYSTEM_PROMPT = """You are Whofy Assistant — a chatbot embedded in a job-matching platform called Whofy.
 
@@ -72,9 +72,9 @@ Guidelines for your responses:
 
 
 async def get_chat_response(message: str, history: list[dict]) -> str:
-    api_key = settings.groq_api_key
+    api_key = settings.groq_chatbot_api_key
     if not api_key:
-        logger.error("[Chatbot] ERROR: GROQ_API_KEY is not set in .env")
+        logger.error("[Chatbot] ERROR: GROQ_CHATBOT_API_KEY is not set in .env")
         raise HTTPException(status_code=500, detail="Configuration error: API key is not set.")
 
     client = AsyncGroq(api_key=api_key)
