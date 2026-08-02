@@ -82,11 +82,7 @@ def fetch_himalayas_jobs() -> list[dict]:
 
             title = job.get("title", "")
             raw_desc = job.get("description", "")
-            description = strip_html(raw_desc)
-            detection_text = full_text(raw_desc)
             location = _location_from(job)
-            required_skills = extract_required_skills(title, detection_text)
-
             processed.append({
                 "source": "himalayas",
                 "source_job_id": f"hml_{job.get('guid', '')}",
@@ -94,12 +90,9 @@ def fetch_himalayas_jobs() -> list[dict]:
                 "company": job.get("companyName", ""),
                 "company_domain": "",
                 "location": location,
-                "description": bake_required_skills(description, required_skills),
+                "raw_description": raw_desc,
                 "apply_url": job.get("applicationLink", ""),
                 "posted_at": _posted_at(job),
-                "work_type": detect_work_type(title, location, detection_text),
-                "experience_level": detect_experience(title, detection_text),
-                "required_skills": required_skills,
             })
         return processed, hit_old
 
@@ -143,24 +136,38 @@ def fetch_himalayas_jobs() -> list[dict]:
 
 BATCH_SIZE = 2000
 
+from listings.shared.pipeline import process_jobs_batch
 
-def main():
+def main(mp_executor=None):
+    import time
+    t_start = time.time()
+    
     print("Fetching jobs from Himalayas...")
     all_jobs = fetch_himalayas_jobs()
     print(f"Total jobs fetched (last {MAX_AGE_DAYS} days): {len(all_jobs)}")
 
-    all_jobs = filter_tech_jobs(all_jobs)
-    print(f"After tech filter: {len(all_jobs)}")
+    print("Running process_jobs_batch (enrichment + filtering)...")
+    batch_result = process_jobs_batch(all_jobs, mp_executor=mp_executor)
+    accepted_jobs = batch_result["accepted"]
+    tech_filtered = batch_result["tech_filtered"]
+    lang_filtered = batch_result["lang_filtered"]
+    
+    t_filter = time.time()
+    print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
+    print(f"Filtered (Tech): {tech_filtered}")
+    print(f"Filtered (Lang): {lang_filtered}")
 
-    if not all_jobs:
+    if not accepted_jobs:
         print("No jobs to save.")
         return
 
-    for i in range(0, len(all_jobs), BATCH_SIZE):
-        batch = all_jobs[i:i + BATCH_SIZE]
+    for i in range(0, len(accepted_jobs), BATCH_SIZE):
+        batch = accepted_jobs[i:i + BATCH_SIZE]
         result = save_jobs(batch, source="himalayas")
+        if i == 0:
+            result["tech_filtered"] = tech_filtered
+            result["non_english_skipped"] = lang_filtered
         print(f"Saved batch {i // BATCH_SIZE + 1} ({len(batch)} jobs): {result}")
-
 
 if __name__ == "__main__":
     main()

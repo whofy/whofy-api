@@ -4,8 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pymongo import UpdateOne
 
 from listings.shared.storage import get_client, DB_NAME
-
-LOGOS_COLLECTION = "company_logos"
+LOGOS_COLLECTION = "company_logos_test"
 
 KNOWN_DOMAINS = {
     "google": "google.com",

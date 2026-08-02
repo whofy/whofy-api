@@ -206,9 +206,6 @@ def fetch_greenhouse_jobs(company: dict) -> list[dict]:
         location = job.get("location", {}).get("name", "Not specified")
         title = job.get("title", "")
         raw_content = job.get("content", "")
-        description = strip_html(raw_content)
-        detection_text = full_text(raw_content)
-        required_skills = extract_required_skills(title, detection_text)
         normalized.append({
             "source": "greenhouse",
             "source_job_id": f"gh_{job['id']}",
@@ -216,18 +213,20 @@ def fetch_greenhouse_jobs(company: dict) -> list[dict]:
             "company": company["name"],
             "company_domain": company.get("domain", ""),
             "location": location,
-            "description": bake_required_skills(description, required_skills),
+            "raw_description": raw_content,
             "apply_url": job.get("absolute_url", ""),
             "posted_at": job.get("updated_at", ""),
-            "work_type": detect_work_type(title, location, detection_text),
-            "experience_level": detect_experience(title, detection_text),
-            "required_skills": required_skills,
         })
 
     return normalized
 
+from listings.shared.pipeline import process_jobs_batch
 
-def main():
+def main(mp_executor=None):
+    import time
+    from listings.shared.storage import save_jobs
+    
+    t_start = time.time()
     all_jobs = []
 
     with ThreadPoolExecutor(max_workers=5) as executor:
@@ -241,14 +240,30 @@ def main():
             except Exception as e:
                 print(f"Error processing {company['name']}: {e}")
 
-    print(f"\nTotal jobs fetched: {len(all_jobs)}")
+    t_fetch = time.time()
+    print(f"\nTotal raw jobs fetched: {len(all_jobs)}")
+    print(f"Total fetch time: {t_fetch - t_start:.2f}s")
 
-    all_jobs = filter_tech_jobs(all_jobs)
-    print(f"After tech filter: {len(all_jobs)}")
+    print("Running process_jobs_batch (enrichment + filtering)...")
+    batch_result = process_jobs_batch(all_jobs, mp_executor=mp_executor)
+    accepted_jobs = batch_result["accepted"]
+    tech_filtered = batch_result["tech_filtered"]
+    lang_filtered = batch_result["lang_filtered"]
+    
+    t_filter = time.time()
+    print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
+    print(f"Filtered (Tech): {tech_filtered}")
+    print(f"Filtered (Lang): {lang_filtered}")
+    print(f"MP Pipeline time: {t_filter - t_fetch:.2f}s")
 
-    if all_jobs:
-        result = save_jobs(all_jobs, source="greenhouse")
+    if accepted_jobs:
+        result = save_jobs(accepted_jobs, source="greenhouse")
+        result["tech_filtered"] = tech_filtered
+        result["non_english_skipped"] = lang_filtered
+        t_save = time.time()
         print(f"Saved to MongoDB: {result}")
+        print(f"Save jobs total time: {t_save - t_filter:.2f}s")
+        print(f"TOTAL RUN TIME: {t_save - t_start:.2f}s")
     else:
         print("No jobs to save.")
 

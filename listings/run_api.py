@@ -52,16 +52,21 @@ class ThreadPrefixLogger:
 
 heavy_semaphore = threading.Semaphore(2)
 
-def run_source_concurrently(name, fetcher, is_heavy):
+def run_source_concurrently(name, fetcher, is_heavy, mp_executor=None):
     log_prefix.set(name)
     start_time = time.time()
     print(f"Started fetching at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
     try:
+        import inspect
+        kwargs = {}
+        if "mp_executor" in inspect.signature(fetcher).parameters:
+            kwargs["mp_executor"] = mp_executor
+            
         if is_heavy:
             with heavy_semaphore:
-                fetcher()
+                fetcher(**kwargs)
         else:
-            fetcher()
+            fetcher(**kwargs)
     except Exception as e:
         print(f"ERROR in {name}: {e}")
     finally:
@@ -89,11 +94,19 @@ def run_ingestion():
     logger = ThreadPrefixLogger()
     sys.stdout = logger
     
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+    workers = min(16, max(2, os.cpu_count() or 2))
+    
     try:
-        with ThreadPoolExecutor(max_workers=len(sources)) as executor:
-            futures = [executor.submit(run_source_concurrently, name, fetcher, is_heavy) for name, fetcher, is_heavy in sources]
-            for future in as_completed(futures):
-                future.result()
+        with ProcessPoolExecutor(max_workers=workers) as shared_mp:
+            with ThreadPoolExecutor(max_workers=len(sources)) as executor:
+                futures = [
+                    executor.submit(run_source_concurrently, name, fetcher, is_heavy, shared_mp) 
+                    for name, fetcher, is_heavy in sources
+                ]
+                for future in as_completed(futures):
+                    future.result()
     finally:
         sys.stdout = logger.original_stdout
 

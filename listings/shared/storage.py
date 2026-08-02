@@ -213,24 +213,26 @@ def _is_too_old(posted_at: str) -> bool:
 
 
 def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> dict:
+    import time
+    t_start = time.time()
     if not jobs:
         return {"source": source, "upserted": 0, "modified": 0, "capped": False}
 
     before = len(jobs)
     jobs = [j for j in jobs if not _is_too_old(j.get("posted_at", ""))]
     too_old = before - len(jobs)
-
-    before_lang = len(jobs)
-    jobs = [j for j in jobs if not _is_non_english(j)]
-    non_english = before_lang - len(jobs)
+    t_old = time.time()
+    t_lang = time.time()
 
     for job in jobs:
         raw_loc = job.get("location", "")
         if raw_loc:
             job["location"] = _normalize_location(raw_loc)
+    t_loc = time.time()
 
     from listings.shared.logos import attach_logos
     logos_attached = attach_logos(jobs)
+    t_logos = time.time()
 
     for job in jobs:
         job["fingerprint"] = _fingerprint(source, job.get("source_job_id", ""))
@@ -254,6 +256,7 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
             {"fingerprint": 1},
         )
         existing = {doc["fingerprint"] for doc in cursor}
+    t_in = time.time()
 
     now = datetime.now(timezone.utc).isoformat()
     skipped = 0
@@ -272,6 +275,7 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
                 upsert=True,
             )
         )
+    t_ops = time.time()
 
     result_info = {
         "source": source,
@@ -281,7 +285,6 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         "total_processed": len(jobs),
         "cross_source_skipped": skipped,
         "too_old_skipped": too_old,
-        "non_english_skipped": non_english,
         "logos_attached": logos_attached,
     }
 
@@ -289,6 +292,18 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         result = collection.bulk_write(operations, ordered=False)
         result_info["upserted"] = result.upserted_count
         result_info["modified"] = result.modified_count
+    t_bulk = time.time()
+
+    if source == "greenhouse":
+        print(f"\n[Greenhouse save_jobs Profiling]")
+        print(f" - Too old filter: {t_old - t_start:.2f}s")
+        print(f" - Langdetect: {t_lang - t_old:.2f}s")
+        print(f" - Location norm: {t_loc - t_lang:.2f}s")
+        print(f" - attach_logos: {t_logos - t_loc:.2f}s")
+        print(f" - $in query: {t_in - t_logos:.2f}s")
+        print(f" - build ops: {t_ops - t_in:.2f}s")
+        print(f" - bulk_write: {t_bulk - t_ops:.2f}s")
+        print(f" - Total save_jobs: {t_bulk - t_start:.2f}s\n")
 
     return result_info
 
