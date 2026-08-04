@@ -1,3 +1,4 @@
+from datetime import datetime
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
@@ -75,7 +76,8 @@ def fetch_lever_jobs(company: dict) -> list[dict]:
             "description": description,
             "detection_text": detection_text,
             "apply_url": job.get("hostedUrl", ""),
-            "posted_at": "",
+            "posted_at": None,
+            "data_quality_flags": ["missing_posted_at"],
             "work_type": workplace_type,
         })
 

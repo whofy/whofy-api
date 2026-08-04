@@ -1,3 +1,4 @@
+from datetime import datetime
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
@@ -115,7 +116,7 @@ def fetch_ashby_jobs(company: dict) -> list[dict]:
             "location": location,
             "raw_description": raw_description,
             "apply_url": job_url,
-            "posted_at": job.get("publishedAt", ""),
+            "posted_at": datetime.fromisoformat(job.get("publishedAt").replace("Z", "+00:00")) if job.get("publishedAt") else None,
         })
 
     return normalized

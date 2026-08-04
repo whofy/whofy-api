@@ -1,3 +1,4 @@
+from datetime import datetime
 import requests
 from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
 from listings.shared.normalize import full_text, strip_html
@@ -38,7 +39,7 @@ def fetch_remoteok_jobs() -> list[dict]:
             "location": location,
             "raw_description": raw_description,
             "apply_url": job.get("url", ""),
-            "posted_at": job.get("date", ""),
+            "posted_at": datetime.fromisoformat(job.get("date").replace("Z", "+00:00")) if job.get("date") else None,
         })
 
     return normalized

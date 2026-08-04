@@ -132,7 +132,7 @@ def _parse_search_page(html: str) -> list[dict]:
             "company": company,
             "location": location,
             "apply_url": apply_url or f"https://www.linkedin.com/jobs/view/{job_id}",
-            "posted_at": posted_at,
+            "posted_at": datetime.fromisoformat(posted_at.replace("Z", "+00:00")) if posted_at else None,
         })
 
     return listings
@@ -256,7 +256,7 @@ def _enrich_listings(listings: list[dict]) -> list[dict]:
             "location": location,
             "description": bake_required_skills(description, required_skills),
             "apply_url": listing["apply_url"],
-            "posted_at": listing.get("posted_at", ""),
+            "posted_at": datetime.fromisoformat(listing.get("posted_at", "").replace("Z", "+00:00")) if listing.get("posted_at") else None,
             "work_type": detect_work_type(title, location, detection_text),
             "experience_level": detect_experience(title, detection_text),
             "required_skills": required_skills,

@@ -49,20 +49,14 @@ def serialize_job(doc: dict, matched_skills: list[str] | None = None) -> dict:
 
     title = doc.get("title", "")
     location = doc.get("location", "Not specified")
-    # work_type/experience_level/required_skills are computed once at
-    # ingestion time from the FULL (untruncated) posting text and stored on
-    # the doc (see sources/shared/enrich.py) — required_skills is already
-    # baked into the stored description there too, so filtering is a plain
-    # Mongo query and search indexes the skill terms. Fallback to on-the-fly
-    # detection (against the short display text) only covers stray docs that
-    # somehow bypassed ingestion.
     desc = _clean_description(doc.get("description", ""))
-    work_type = doc.get("work_type") or detect_work_type(title, location, desc)
-    experience = doc.get("experience_level") or detect_experience(title, desc)
-    required_skills = doc.get("required_skills")
-    if required_skills is None:
-        required_skills = extract_required_skills(title, desc)
-
+    # work_type, experience_level, and required_skills are now strictly guaranteed by ingestion.
+    work_type = doc.get("work_type")
+    experience = doc.get("experience_level")
+    required_skills = doc.get("required_skills", [])
+    
+    posted_at = doc.get("posted_at")
+    
     job = {
         "id": str(doc["_id"]),
         "title": title,
@@ -70,7 +64,7 @@ def serialize_job(doc: dict, matched_skills: list[str] | None = None) -> dict:
         "location": location,
         "description": desc,
         "applyUrl": doc.get("apply_url", ""),
-        "postedAt": doc.get("posted_at") or None,
+        "postedAt": posted_at.isoformat() if isinstance(posted_at, datetime) else posted_at,
         "source": doc.get("source", ""),
         "workType": work_type,
         "experience": experience,
@@ -86,13 +80,12 @@ def _split_param(val: str, sep: str = r"[,|]") -> list[str]:
     return [s.strip() for s in re.split(sep, val) if s.strip()]
 
 
-def _posted_cutoff(posted: str) -> str | None:
+def _posted_cutoff(posted: str):
     mapping = {"today": 1, "week": 7, "month": 30}
     days = mapping.get(posted)
     if days is None:
         return None
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    return cutoff.isoformat()
+    return datetime.now(timezone.utc) - timedelta(days=days)
 
 
 def _build_filter(

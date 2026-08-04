@@ -51,11 +51,11 @@ def _location_from(job: dict) -> str:
     return "Remote"
 
 
-def _posted_at(job: dict) -> str:
+def _posted_at(job: dict):
     pub = job.get("pubDate")
     if not pub:
-        return ""
-    return datetime.fromtimestamp(int(pub), tz=timezone.utc).isoformat()
+        return None
+    return datetime.fromtimestamp(int(pub), tz=timezone.utc)
 
 
 def fetch_himalayas_jobs() -> list[dict]:

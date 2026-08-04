@@ -64,7 +64,7 @@ COUNTRY_CODE_MAP = {
     "in": "India", "ind": "India", "india": "India",
     "us": "United States", "usa": "United States", "united states": "United States",
     "uk": "United Kingdom", "gb": "United Kingdom", "united kingdom": "United Kingdom",
-    "ca": "Canada", "canada": "Canada",
+    "canada": "Canada",
     "au": "Australia", "australia": "Australia",
     "de": "Germany", "germany": "Germany",
     "fr": "France", "france": "France",
@@ -142,15 +142,30 @@ def _normalize_location(raw: str) -> str:
 
     city = None
     country = None
+    conflict = False
 
     for part in parts:
         lower = part.lower().strip()
         if lower in COUNTRY_CODE_MAP:
-            country = COUNTRY_CODE_MAP[lower]
+            matched_country = COUNTRY_CODE_MAP[lower]
+            if country and country != matched_country:
+                conflict = True
+            country = matched_country
         elif lower in KNOWN_CITIES:
-            city = part.strip()
+            city_name = part.strip()
+            # If city is already set and it's a different city, conflict
+            if city and city.lower() != city_name.lower():
+                conflict = True
+            city = city_name
+            
+            matched_country = KNOWN_CITIES[lower]
+            if country and country != matched_country:
+                conflict = True
             if not country:
-                country = KNOWN_CITIES[lower]
+                country = matched_country
+
+    if conflict:
+        return raw.strip()
 
     if not city:
         for part in parts:
@@ -185,8 +200,12 @@ def _normalize_location(raw: str) -> str:
 
 
 def _is_non_english(job: dict) -> bool:
-    title = job.get("title", "")
-    desc = job.get("description", "")[:500]
+    if job.get("lang_checked"):
+        return False
+        
+    title = job.get("title") or ""
+    desc = job.get("description") or ""
+    desc = desc[:500]
     
     text = f"{title} {desc}".strip()
     if not text:
@@ -222,6 +241,10 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
     jobs = [j for j in jobs if not _is_too_old(j.get("posted_at", ""))]
     too_old = before - len(jobs)
     t_old = time.time()
+    
+    before_lang = len(jobs)
+    jobs = [j for j in jobs if not _is_non_english(j)]
+    non_english = before_lang - len(jobs)
     t_lang = time.time()
 
     for job in jobs:
@@ -261,17 +284,34 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
     now = datetime.now(timezone.utc).isoformat()
     skipped = 0
 
+    from models.job import Job
     operations = []
+    schema_rejected = 0
     for job in jobs:
         if job["fingerprint"] in existing:
             skipped += 1
             continue
         job["last_seen_at"] = now
         job["lang_checked"] = True
+        
+        # Set added_at for validation, even if we move it to $setOnInsert later
+        if "added_at" not in job:
+            job["added_at"] = now
+            
+        try:
+            validated_job = Job.model_validate(job).model_dump(by_alias=True)
+        except Exception as e:
+            schema_rejected += 1
+            continue
+            
+        # Pop added_at so we don't constantly overwrite it on every update
+        added_at_val = validated_job.pop("added_at", now)
+        validated_job.pop("_id", None)
+
         operations.append(
             UpdateOne(
-                {"source": source, "source_job_id": job["source_job_id"]},
-                {"$set": job, "$setOnInsert": {"added_at": now}},
+                {"source": source, "source_job_id": validated_job["source_job_id"]},
+                {"$set": validated_job, "$setOnInsert": {"added_at": added_at_val}},
                 upsert=True,
             )
         )
@@ -285,13 +325,19 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         "total_processed": len(jobs),
         "cross_source_skipped": skipped,
         "too_old_skipped": too_old,
+        "non_english_skipped": non_english,
         "logos_attached": logos_attached,
+        "schema_rejected": schema_rejected,
     }
 
     if operations:
         result = collection.bulk_write(operations, ordered=False)
         result_info["upserted"] = result.upserted_count
         result_info["modified"] = result.modified_count
+        
+    if schema_rejected > 0:
+        print(f"[{source}] SCHEMA REJECTED: {schema_rejected} jobs")
+        
     t_bulk = time.time()
 
     if source == "greenhouse":

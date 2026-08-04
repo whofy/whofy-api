@@ -1,3 +1,4 @@
+from datetime import datetime
 import time
 
 import requests
@@ -155,7 +156,7 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
                 "location": location_str,
                 "raw_description": raw_description,
                 "apply_url": job.get("redirect_url", ""),
-                "posted_at": job.get("created", ""),
+                "posted_at": datetime.fromisoformat(job.get("created").replace("Z", "+00:00")) if job.get("created") else None,
             })
 
     return all_jobs
