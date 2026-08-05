@@ -29,7 +29,7 @@ RESUME_SCHEMA = {
 }
 
 PROMPT = """You are parsing a resume. Extract the following as JSON matching the schema:
-- skills: a flat list of technical/professional skills mentioned (max 15, most relevant first)
+- skills: a flat list of technical/professional skills mentioned (max 25). Include ALL distinct skill categories present (e.g. include both technical/programming skills AND methodology/domain skills like testing practices, if mentioned - do not prioritize one category over another).
 - location: the candidate's city, or "" if not stated
 - experienceLevel: one short phrase like "Fresher", "0-1 years", "2-3 years", or "" if unclear
 - education: list of degree/institution strings, most recent first
@@ -87,7 +87,7 @@ async def structure_resume(text: str) -> dict:
                 {"role": "user", "content": PROMPT.format(text=text[:15000])}
             ],
             response_format={"type": "json_object"},
-            temperature=0.2,
+            temperature=0.0,
         )
     except RateLimitError as e:
         logger.error(f"[Resume Parser] ERROR: Groq API rate limit reached — {e}")
