@@ -29,7 +29,7 @@ Pydantic model: `Job` in [models/job.py](file:///c:/Users/chara/Desktop/whofy/wh
 | `required_skills` | `List[str]` | **Required** | Max 15 entries. Values are canonical skill names from `SKILL_VOCAB` | Skills extracted from title + description via regex matching | Never `None` — always populated (may be `[]` if nothing matched) |
 | `work_type` | `Literal["Remote", "Hybrid", "On-site"]` | **Required** | Exactly one of three values | Detected from title, location, and description text | Never `None` — defaults to `"On-site"` if no signal detected |
 | `experience_level` | `str` | **Required** | `min_length=1`. Values: `"Internship"`, `"Entry Level"`, `"Junior"`, `"Mid Level"`, `"Senior"` | Detected from title and description via regex | Never `None` — defaults to `"Mid Level"` if no signal detected |
-| `lang_checked` | `bool` | **Required** | `true` or `false` | Whether the job passed the English language filter | Never `None` — always set to `true` in `save_jobs()` |
+| `lang_checked` | `bool` | **Required** | `true` or `false` | Whether the job passed the English language filter | Never `None` — set to `true` in `save_jobs()` only after genuinely passing `_is_non_english()` |
 
 ### Indexes (verified against live `db.jobs.getIndexes()`)
 
@@ -75,7 +75,7 @@ Based on actual fetcher code inspection. Legend:
 - **Enrichment fields** (`required_skills`, `work_type`, `experience_level`) are computed by the fetcher before `save_jobs()` is called, using `enrich.py` functions. They are never `None`.
 - **`company_domain`**: Adzuna, RemoteOK, and WeWorkRemotely do not provide this field at all. The fetchers simply omit it from the dict, which means the `Job` model defaults it to `None`. HackerNews parses it from the post body when a URL is present.
 - **`fingerprint`**: Computed inside `save_jobs()` in `storage.py`, not by the fetcher.
-- **`lang_checked`**: Hardcoded to `True` inside `save_jobs()`.
+- **`lang_checked`**: Set to `True` inside `save_jobs()` after the job passes the `langdetect` verification filter.
 
 ---
 
@@ -193,7 +193,8 @@ Returns: `string[]` — array of `job_id` ObjectIds as strings.
 
 ### `lang_checked`
 - **Set by:** `save_jobs()` in [storage.py](file:///c:/Users/chara/Desktop/whofy/whofy-api/listings/shared/storage.py#L287)
-- **Logic:** Hardcoded to `True` for all jobs that pass through `save_jobs()`. The non-English language filter (`_is_non_english()` using `langdetect`) was previously active but is currently bypassed (the filter call exists but `t_lang` is set immediately with no filtering between `t_old` and `t_lang`).
+- **Logic:** The job is passed through `_is_non_english()` (which uses `langdetect`). If it passes (or if `lang_checked` is already `True`), it is kept and `lang_checked` is set/confirmed to `True` before insertion. 
+- **Historical Note:** The filter was temporarily bypassed on Aug 2, 2026, marking unverified jobs as `True`. This was resolved on Aug 4, 2026 with a retroactive manual cleanup that removed 268 non-English jobs from the 33,895-document database, making the flag trustworthy again for all existing documents.
 
 ### `company_domain`
 - **Set by:** Each fetcher that has access to the data. Adzuna, RemoteOK, and WeWorkRemotely do not set it (defaults to `None`).
