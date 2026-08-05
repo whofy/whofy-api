@@ -1,6 +1,7 @@
 import re
 import time
 from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
@@ -201,6 +202,8 @@ def fetch_workday_jobs(company: dict) -> list[dict]:
                 "location": location,
                 "apply_url": apply_url,
                 "posted_at": posted_at,
+                "description": None,
+                "data_quality_flags": ["missing_description"],
                 "external_path": external_path,
                 "source_id": source_id,
             })
@@ -232,6 +235,8 @@ def fetch_workday_jobs(company: dict) -> list[dict]:
             "description": bake_required_skills(title, required_skills),
             "apply_url": listing["apply_url"],
             "posted_at": listing["posted_at"],
+            "description": None,
+            "data_quality_flags": ["missing_description"],
             "work_type": detect_work_type(title, location, detection_text),
             "experience_level": detect_experience(title, detection_text),
             "required_skills": required_skills,
@@ -243,14 +248,16 @@ def fetch_workday_jobs(company: dict) -> list[dict]:
 def main():
     all_jobs = []
 
-    for company in COMPANIES:
-        print(f"Fetching jobs for {company['name']}...")
-        try:
-            jobs = fetch_workday_jobs(company)
-            all_jobs.extend(jobs)
-        except Exception as e:
-            print(f"  ERROR: {e}")
-        time.sleep(1)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fetch_workday_jobs, company): company for company in COMPANIES}
+        for future in as_completed(futures):
+            company = futures[future]
+            print(f"Fetching jobs for {company['name']}...")
+            try:
+                jobs = future.result()
+                all_jobs.extend(jobs)
+            except Exception as e:
+                print(f"  ERROR for {company['name']}: {e}")
 
     print(f"\nTotal jobs fetched: {len(all_jobs)}")
 

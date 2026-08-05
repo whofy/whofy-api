@@ -1,5 +1,5 @@
-from datetime import datetime
 import time
+import threading
 
 import requests
 from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
@@ -22,7 +22,7 @@ RAW_JOB_CAP = 12000
 class RateLimitExhausted(Exception):
     pass
 
-COUNTRIES = ["in", "us", "gb", "ca", "au", "de", "fr", "nl", "br", "sg", "nz", "pl"]
+COUNTRIES = ["us"]
 
 SEARCH_QUERIES = [
     "software engineer",
@@ -31,57 +31,10 @@ SEARCH_QUERIES = [
     "backend developer",
     "fullstack developer",
     "data engineer",
-    "data scientist",
-    "devops engineer",
-    "cloud engineer",
-    "machine learning engineer",
-    "QA engineer",
-    "mobile developer",
-    "UI UX designer",
-    "product manager",
-    "cybersecurity analyst",
-    "systems engineer",
-    "web developer",
-    "python developer",
-    "java developer",
-    "react developer",
-    "golang developer",
-    "rust developer",
-    "iOS developer",
-    "android developer",
-    "site reliability engineer",
-    "data analyst",
-    "database administrator",
-    "network engineer",
-    "blockchain developer",
-    "AI engineer",
-    "MLOps engineer",
-    "platform engineer",
-    "cloud architect",
-    "solutions architect",
-    "infrastructure engineer",
-    "security engineer",
-    "embedded engineer",
-    "firmware engineer",
-    "technical lead",
-    "engineering manager",
-    "scrum master",
-    "technical program manager",
-    "data architect",
-    "ETL developer",
-    "automation engineer",
-    "DevSecOps",
-    "Kubernetes engineer",
-    "AWS engineer",
-    "Azure engineer",
-    "SAP consultant",
-    "Salesforce developer",
-    "ServiceNow developer",
-    "ERP developer",
-    "business intelligence",
-    "power BI developer",
-    "tableau developer",
 ]
+
+in_flight = 0
+in_flight_lock = threading.Lock()
 
 HEADERS = {
     "User-Agent": "Whofy Job Aggregator (contact: whofyteam@gmail.com)"
@@ -106,8 +59,12 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
             "sort_by": "date",
         }
 
+        global in_flight
         resp = None
         for attempt in range(1, MAX_RETRIES + 1):
+            with in_flight_lock:
+                in_flight += 1
+                print(f"[IN_FLIGHT: {in_flight}] Starting request for {country} '{query}' page {page}")
             try:
                 resp = requests.get(url, params=params, headers=HEADERS, timeout=30)
             except requests.RequestException as e:
@@ -118,6 +75,8 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
             # 429 = explicit rate limit; 503/500/502/504 = Adzuna throttling or
             # a transient server hiccup. Both get retried with backoff.
             if resp.status_code in (429, 500, 502, 503, 504):
+                with in_flight_lock:
+                    in_flight -= 1
                 if attempt == MAX_RETRIES:
                     print(f"  Adzuna ({country}) page {page} still failing (HTTP {resp.status_code}) after {MAX_RETRIES} retries — quota/throttle likely exhausted.")
                     raise RateLimitExhausted()
@@ -126,6 +85,8 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
                 time.sleep(backoff)
                 continue
 
+            with in_flight_lock:
+                in_flight -= 1
             break
 
         if resp is None:
@@ -148,15 +109,22 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
             location_str = ", ".join(location.get("area", [])) if location.get("area") else "Not specified"
             title = job.get("title", "")
             raw_description = job.get("description", "")
+            description = strip_html(raw_description)
+            detection_text = full_text(raw_description)
+            required_skills = extract_required_skills(title, detection_text)
+
             all_jobs.append({
                 "source": "adzuna",
                 "source_job_id": f"adz_{job.get('id', '')}",
                 "title": title,
                 "company": job.get("company", {}).get("display_name", ""),
                 "location": location_str,
-                "raw_description": raw_description,
+                "description": bake_required_skills(description, required_skills),
                 "apply_url": job.get("redirect_url", ""),
-                "posted_at": datetime.fromisoformat(job.get("created").replace("Z", "+00:00")) if job.get("created") else None,
+                "posted_at": job.get("created", ""),
+                "work_type": detect_work_type(title, location_str, detection_text),
+                "experience_level": detect_experience(title, detection_text),
+                "required_skills": required_skills,
             })
 
     return all_jobs
@@ -168,9 +136,7 @@ def _fetch_wrapper(country, query):
     except RateLimitExhausted:
         return None
 
-from listings.shared.pipeline import process_jobs_batch
-
-def main(mp_executor=None):
+def main():
     if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
         print("ADZUNA_APP_ID and ADZUNA_APP_KEY not set, skipping Adzuna.")
         return
@@ -212,27 +178,13 @@ def main(mp_executor=None):
                 executor.shutdown(wait=False, cancel_futures=True)
                 break
 
-    import time
-    t_start = time.time()
-    
     print(f"\nTotal unique jobs fetched: {len(all_jobs)}")
 
-    print("Running process_jobs_batch (enrichment + filtering)...")
-    batch_result = process_jobs_batch(all_jobs, mp_executor=mp_executor)
-    accepted_jobs = batch_result["accepted"]
-    tech_filtered = batch_result["tech_filtered"]
-    lang_filtered = batch_result["lang_filtered"]
-    
-    t_filter = time.time()
-    print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
-    print(f"Filtered (Tech): {tech_filtered}")
-    print(f"Filtered (Lang): {lang_filtered}")
+    all_jobs = filter_tech_jobs(all_jobs)
+    print(f"After tech filter: {len(all_jobs)}")
 
-    if accepted_jobs:
-        result = save_jobs(accepted_jobs, source="adzuna")
-        result["tech_filtered"] = tech_filtered
-        result["non_english_skipped"] = lang_filtered
-        print(f"Saved to MongoDB: {result}")
+    if all_jobs:
+        print(f"Skipping save for test. Would save {len(all_jobs)} jobs.")
     else:
         print("No jobs to save.")
 

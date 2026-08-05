@@ -4,6 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from pymongo import MongoClient, UpdateOne
 import certifi
+try:
+    from langdetect import detect, LangDetectException, DetectorFactory
+    DetectorFactory.seed = 0
+except ImportError:
+    pass
 
 from config.settings import settings
 
@@ -16,14 +21,19 @@ EXPIRY_DAYS = 28
 MAX_AGE_DAYS = 28
 
 
+_client_instance = None
 def get_client() -> MongoClient:
+    global _client_instance
+    if _client_instance is not None:
+        return _client_instance
     if not MONGODB_URI:
         raise RuntimeError("MONGODB_URI environment variable is not set")
-    return MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
+    _client_instance = MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
+    return _client_instance
 
 
-def _fingerprint(title: str, company: str) -> str:
-    raw = f"{title}||{company}".lower()
+def _fingerprint(source: str, source_job_id: str) -> str:
+    raw = f"{source}||{source_job_id}".lower()
     return re.sub(r"[^a-z0-9|]", "", raw)
 
 
@@ -54,7 +64,7 @@ COUNTRY_CODE_MAP = {
     "in": "India", "ind": "India", "india": "India",
     "us": "United States", "usa": "United States", "united states": "United States",
     "uk": "United Kingdom", "gb": "United Kingdom", "united kingdom": "United Kingdom",
-    "ca": "Canada", "canada": "Canada",
+    "canada": "Canada",
     "au": "Australia", "australia": "Australia",
     "de": "Germany", "germany": "Germany",
     "fr": "France", "france": "France",
@@ -132,15 +142,30 @@ def _normalize_location(raw: str) -> str:
 
     city = None
     country = None
+    conflict = False
 
     for part in parts:
         lower = part.lower().strip()
         if lower in COUNTRY_CODE_MAP:
-            country = COUNTRY_CODE_MAP[lower]
+            matched_country = COUNTRY_CODE_MAP[lower]
+            if country and country != matched_country:
+                conflict = True
+            country = matched_country
         elif lower in KNOWN_CITIES:
-            city = part.strip()
+            city_name = part.strip()
+            # If city is already set and it's a different city, conflict
+            if city and city.lower() != city_name.lower():
+                conflict = True
+            city = city_name
+            
+            matched_country = KNOWN_CITIES[lower]
+            if country and country != matched_country:
+                conflict = True
             if not country:
-                country = KNOWN_CITIES[lower]
+                country = matched_country
+
+    if conflict:
+        return raw.strip()
 
     if not city:
         for part in parts:
@@ -175,20 +200,22 @@ def _normalize_location(raw: str) -> str:
 
 
 def _is_non_english(job: dict) -> bool:
-    title = job.get("title", "")
-    company = job.get("company", "")
-    desc = job.get("description", "")[:500]
-    for text in [title, company]:
-        if not text:
-            continue
-        non_latin = sum(1 for c in text if ord(c) > 127 and not c.isspace())
-        if non_latin > 0 and non_latin / max(len(text), 1) > 0.1:
-            return True
-    if desc:
-        non_latin = sum(1 for c in desc if ord(c) > 127 and not c.isspace())
-        if non_latin / max(len(desc), 1) > 0.15:
-            return True
-    return False
+    if job.get("lang_checked"):
+        return False
+        
+    title = job.get("title") or ""
+    desc = job.get("description") or ""
+    desc = desc[:500]
+    
+    text = f"{title} {desc}".strip()
+    if not text:
+        return False
+        
+    try:
+        lang = detect(text)
+        return lang != "en"
+    except Exception:
+        return False
 
 
 def _is_too_old(posted_at: str) -> bool:
@@ -205,27 +232,33 @@ def _is_too_old(posted_at: str) -> bool:
 
 
 def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> dict:
+    import time
+    t_start = time.time()
     if not jobs:
         return {"source": source, "upserted": 0, "modified": 0, "capped": False}
 
     before = len(jobs)
     jobs = [j for j in jobs if not _is_too_old(j.get("posted_at", ""))]
     too_old = before - len(jobs)
-
+    t_old = time.time()
+    
     before_lang = len(jobs)
     jobs = [j for j in jobs if not _is_non_english(j)]
     non_english = before_lang - len(jobs)
+    t_lang = time.time()
 
     for job in jobs:
         raw_loc = job.get("location", "")
         if raw_loc:
             job["location"] = _normalize_location(raw_loc)
+    t_loc = time.time()
 
     from listings.shared.logos import attach_logos
     logos_attached = attach_logos(jobs)
+    t_logos = time.time()
 
     for job in jobs:
-        job["fingerprint"] = _fingerprint(job.get("title", ""), job.get("company", ""))
+        job["fingerprint"] = _fingerprint(source, job.get("source_job_id", ""))
 
     capped = False
     if len(jobs) > cap:
@@ -246,23 +279,43 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
             {"fingerprint": 1},
         )
         existing = {doc["fingerprint"] for doc in cursor}
+    t_in = time.time()
 
     now = datetime.now(timezone.utc).isoformat()
     skipped = 0
 
+    from models.job import Job
     operations = []
+    schema_rejected = 0
     for job in jobs:
         if job["fingerprint"] in existing:
             skipped += 1
             continue
         job["last_seen_at"] = now
+        job["lang_checked"] = True
+        
+        # Set added_at for validation, even if we move it to $setOnInsert later
+        if "added_at" not in job:
+            job["added_at"] = now
+            
+        try:
+            validated_job = Job.model_validate(job).model_dump(by_alias=True)
+        except Exception as e:
+            schema_rejected += 1
+            continue
+            
+        # Pop added_at so we don't constantly overwrite it on every update
+        added_at_val = validated_job.pop("added_at", now)
+        validated_job.pop("_id", None)
+
         operations.append(
             UpdateOne(
-                {"source": source, "source_job_id": job["source_job_id"]},
-                {"$set": job, "$setOnInsert": {"added_at": now}},
+                {"source": source, "source_job_id": validated_job["source_job_id"]},
+                {"$set": validated_job, "$setOnInsert": {"added_at": added_at_val}},
                 upsert=True,
             )
         )
+    t_ops = time.time()
 
     result_info = {
         "source": source,
@@ -274,16 +327,44 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         "too_old_skipped": too_old,
         "non_english_skipped": non_english,
         "logos_attached": logos_attached,
+        "schema_rejected": schema_rejected,
     }
 
     if operations:
         result = collection.bulk_write(operations, ordered=False)
         result_info["upserted"] = result.upserted_count
         result_info["modified"] = result.modified_count
+        
+    if schema_rejected > 0:
+        print(f"[{source}] SCHEMA REJECTED: {schema_rejected} jobs")
+        
+    t_bulk = time.time()
 
-    client.close()
+    if source == "greenhouse":
+        print(f"\n[Greenhouse save_jobs Profiling]")
+        print(f" - Too old filter: {t_old - t_start:.2f}s")
+        print(f" - Langdetect: {t_lang - t_old:.2f}s")
+        print(f" - Location norm: {t_loc - t_lang:.2f}s")
+        print(f" - attach_logos: {t_logos - t_loc:.2f}s")
+        print(f" - $in query: {t_in - t_logos:.2f}s")
+        print(f" - build ops: {t_ops - t_in:.2f}s")
+        print(f" - bulk_write: {t_bulk - t_ops:.2f}s")
+        print(f" - Total save_jobs: {t_bulk - t_start:.2f}s\n")
+
     return result_info
 
+
+from concurrent.futures import ProcessPoolExecutor
+
+def _process_batch(docs):
+    to_delete = []
+    to_mark = []
+    for doc in docs:
+        if _is_non_english(doc):
+            to_delete.append(doc["_id"])
+        else:
+            to_mark.append(doc["_id"])
+    return {"to_delete": to_delete, "to_mark": to_mark}
 
 def cleanup_non_english_jobs() -> int:
     client = get_client()
@@ -291,12 +372,39 @@ def cleanup_non_english_jobs() -> int:
     collection = db[JOBS_COLLECTION]
 
     removed = 0
-    for doc in collection.find({}, {"title": 1, "company": 1}):
-        if _is_non_english(doc):
-            collection.delete_one({"_id": doc["_id"]})
-            removed += 1
+    batch_size = 2000
+    batch = []
 
-    client.close()
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        futures = []
+        for doc in collection.find({"lang_checked": {"$ne": True}}, {"title": 1, "description": 1}):
+            batch.append(doc)
+            if len(batch) >= batch_size:
+                futures.append(executor.submit(_process_batch, batch))
+                batch = []
+        if batch:
+            futures.append(executor.submit(_process_batch, batch))
+            
+        all_to_delete = []
+        all_to_mark = []
+        for future in futures:
+            res = future.result()
+            all_to_delete.extend(res["to_delete"])
+            all_to_mark.extend(res["to_mark"])
+
+    if all_to_delete:
+        chunk_size = 1000
+        for i in range(0, len(all_to_delete), chunk_size):
+            chunk = all_to_delete[i:i + chunk_size]
+            collection.delete_many({"_id": {"$in": chunk}})
+        removed = len(all_to_delete)
+        
+    if all_to_mark:
+        chunk_size = 1000
+        for i in range(0, len(all_to_mark), chunk_size):
+            chunk = all_to_mark[i:i + chunk_size]
+            collection.update_many({"_id": {"$in": chunk}}, {"$set": {"lang_checked": True}})
+
     return removed
 
 
@@ -315,7 +423,6 @@ def normalize_existing_locations() -> int:
             collection.update_one({"_id": doc["_id"]}, {"$set": {"location": normalized}})
             updated += 1
 
-    client.close()
     return updated
 
 
@@ -331,7 +438,6 @@ def cleanup_expired_jobs(expiry_days: int = EXPIRY_DAYS) -> int:
             {"added_at": {"$exists": False}, "last_seen_at": {"$lt": cutoff}},
         ]
     })
-    client.close()
     return result.deleted_count
 
 
@@ -341,9 +447,9 @@ def ensure_indexes():
     collection = db[JOBS_COLLECTION]
 
     collection.create_index([("source", 1), ("source_job_id", 1)], unique=True)
+    collection.create_index([("posted_at", -1), ("_id", 1)])
     collection.create_index([("last_seen_at", -1)])
     collection.create_index([("added_at", -1)])
-    collection.create_index([("fingerprint", 1)])
     collection.create_index([("title", "text"), ("description", "text")])
     collection.create_index([("work_type", 1)])
     collection.create_index([("experience_level", 1)])
@@ -351,7 +457,6 @@ def ensure_indexes():
     logos_col = db[LOGOS_COLLECTION]
     logos_col.create_index("company_key", unique=True)
 
-    client.close()
     print("Indexes ensured.")
 
 
@@ -363,7 +468,6 @@ def get_collection_stats() -> dict:
     total = collection.count_documents({})
     pipeline = [{"$group": {"_id": "$source", "count": {"$sum": 1}}}]
     per_source = {doc["_id"]: doc["count"] for doc in collection.aggregate(pipeline)}
-    client.close()
     return {"total_jobs": total, "per_source": per_source}
 
 

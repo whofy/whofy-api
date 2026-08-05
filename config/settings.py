@@ -9,7 +9,8 @@ ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
 class Settings(BaseSettings):
     mongodb_uri: Optional[str] = None
     cors_origins: str = "http://localhost:5173"
-    groq_api_key: Optional[str] = None
+    groq_chatbot_api_key: Optional[str] = None
+    groq_resume_parser_api_key: Optional[str] = None
     adzuna_app_id: Optional[str] = None
     adzuna_app_key: Optional[str] = None
     clerk_secret_key: Optional[str] = None

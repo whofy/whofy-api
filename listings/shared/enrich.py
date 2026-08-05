@@ -10,6 +10,9 @@ _JUNIOR_RE = re.compile(r"\b(?:junior|jr\.?|associate)\b", re.IGNORECASE)
 _INTERN_RE = re.compile(r"\b(?:intern|internship|trainee|apprentice|co-?op)\b", re.IGNORECASE)
 _ENTRY_RE = re.compile(r"\b(?:entry[\s-]?level|graduate|fresher|new[\s-]?grad)\b", re.IGNORECASE)
 
+# RULE: When adding a new skill, if the term is <= 4 characters OR matches a 
+# common English dictionary word (e.g. "Lead", "Post", "Flow"), it MUST be 
+# added directly to _CASE_SENSITIVE_SKILLS instead of here to prevent massive false positives.
 SKILL_VOCAB = [
     # ── Programming Languages ──
     "Python", "JavaScript", "TypeScript", "Java", "C++", "C#", "Go", "Golang",
@@ -17,7 +20,7 @@ SKILL_VOCAB = [
     "Perl", "Lua", "Haskell", "Erlang", "Elixir", "Clojure", "F#",
     "Groovy", "Dart", "Julia", "Zig", "Nim", "OCaml", "Fortran", "COBOL",
     "Assembly", "Bash", "Shell", "PowerShell", "VBA", "Delphi", "Pascal",
-    "Objective-C", "ABAP", "Apex", "Solidity", "Vyper", "Move", "Cairo",
+    "Objective-C", "ABAP", "Apex", "Solidity", "Vyper", "Cairo",
     "Prolog", "Lisp", "Scheme", "Racket", "Crystal", "V", "Ada",
     "VHDL", "Verilog", "SystemVerilog", "LabVIEW", "SAS", "SPSS", "Stata",
 
@@ -52,7 +55,7 @@ SKILL_VOCAB = [
     "Deno", "Bun",
 
     # ── API & Communication ──
-    "GraphQL", "REST", "gRPC", "SOAP", "WebSocket", "SSE",
+    "GraphQL", "gRPC", "SOAP", "WebSocket", "SSE",
     "OpenAPI", "Swagger", "Postman", "Insomnia",
     "Apollo", "Hasura", "Prisma", "tRPC", "Hono",
     "Protocol Buffers", "Protobuf", "Thrift", "Avro",
@@ -149,7 +152,7 @@ SKILL_VOCAB = [
     "SwiftUI", "UIKit", "Jetpack Compose", "Kotlin Multiplatform",
     "Ionic", "Capacitor", "Cordova", "PhoneGap", "Expo",
     "App Store", "Google Play", "TestFlight", "Firebase",
-    "Core Data", "Room", "Realm", "SQLite",
+    "Core Data", "Realm", "SQLite",
     "ARKit", "ARCore", "Core ML", "ML Kit",
     "Push Notifications", "Deep Linking",
 
@@ -185,7 +188,7 @@ SKILL_VOCAB = [
     "DevSecOps", "Shift Left", "Security Automation",
 
     # ── Networking & Infrastructure ──
-    "TCP/IP", "DNS", "HTTP", "HTTPS", "SSH", "FTP", "SMTP",
+    "TCP/IP", "DNS", "SSH", "FTP", "SMTP",
     "BGP", "OSPF", "MPLS", "VLAN", "VPN", "SD-WAN",
     "Cisco", "Juniper", "Palo Alto", "Fortinet", "F5",
     "CDN", "Load Balancer", "Reverse Proxy",
@@ -235,7 +238,7 @@ SKILL_VOCAB = [
     # ── Project Management & Collaboration ──
     "Jira", "Confluence", "Trello", "Asana", "Monday.com",
     "Linear", "Notion", "ClickUp", "Basecamp", "Shortcut",
-    "Agile", "Scrum", "Kanban", "SAFe", "Lean",
+    "Agile", "Scrum", "Kanban", "SAFe",
     "Product Management", "Project Management", "PMP",
     "Slack", "Microsoft Teams", "Zoom", "Discord",
     "Miro", "FigJam", "Lucidchart",
@@ -247,15 +250,14 @@ SKILL_VOCAB = [
     "ethers.js", "web3.js", "wagmi", "viem",
     "IPFS", "The Graph", "Chainlink", "Polygon", "Solana",
     "Cosmos", "Polkadot", "Avalanche", "Arbitrum", "Optimism",
-    "Rust", "Anchor", "Move",
+    "Rust", "Anchor",
     "MetaMask", "WalletConnect",
 
     # ── Embedded & Hardware ──
     "Embedded Systems", "Firmware", "RTOS", "FreeRTOS", "Zephyr",
     "Arduino", "Raspberry Pi", "ESP32", "STM32", "ARM",
     "VHDL", "Verilog", "SystemVerilog", "FPGA", "ASIC",
-    "PCB Design", "Altium", "KiCad", "Eagle",
-    "SPI", "I2C", "UART", "CAN", "Modbus", "MQTT",
+    "PCB Design", "Altium", "KiCad", "SPI", "I2C", "UART", "Modbus", "MQTT",
     "ROS", "ROS2", "Robotics", "PLC", "SCADA",
     "LabVIEW", "Simulink", "AutoCAD", "SolidWorks", "CATIA",
 
@@ -274,13 +276,24 @@ SKILL_VOCAB = [
     "Socket.IO", "SignalR",
     "Terraform", "Infrastructure as Code", "GitOps",
     "Site Reliability", "SRE", "Observability", "Monitoring",
-    "Technical Writing", "Documentation", "API Documentation",
+    "Technical Writing", "API Documentation",
 ]
 _UNIQUE_SKILLS = list(dict.fromkeys(SKILL_VOCAB))
-_SKILL_PATTERN = re.compile(
-    r"\b(?:" + "|".join(re.escape(s) for s in sorted(_UNIQUE_SKILLS, key=len, reverse=True)) + r")\b",
+
+_CASE_SENSITIVE_SKILLS = {
+    "C", "R", "C++", "C#", "F#", "Go", "Pig", "Bun", "V", "F5", 
+    "Zig", "Nim", "Ada", "Lit", "SWR", "SWC", "Koa", "Yii", "Gin", "Chi", "SSE"
+}
+_CASE_INSENSITIVE_SKILLS = [s for s in _UNIQUE_SKILLS if s not in _CASE_SENSITIVE_SKILLS]
+
+_SKILL_PATTERN_CI = re.compile(
+    r"(?<![a-zA-Z0-9_])(?:" + "|".join(re.escape(s) for s in sorted(_CASE_INSENSITIVE_SKILLS, key=len, reverse=True)) + r")(?![a-zA-Z0-9_+#])",
     re.IGNORECASE,
 )
+_SKILL_PATTERN_CS = re.compile(
+    r"(?<![a-zA-Z0-9_])(?:" + "|".join(re.escape(s) for s in sorted(_CASE_SENSITIVE_SKILLS, key=len, reverse=True)) + r")(?![a-zA-Z0-9_+#])",
+)
+
 _SKILL_CANONICAL = {s.lower(): s for s in _UNIQUE_SKILLS}
 
 MAX_EXTRACTED_SKILLS = 15
@@ -339,17 +352,24 @@ def detect_experience(title: str, description: str) -> str:
 
 
 def extract_required_skills(title: str, description: str) -> list[str]:
-    haystack = f"{title} {description}"
-    matches = _SKILL_PATTERN.findall(haystack)
-    seen = set()
+    combined = f"{title} {description}"
     found = []
-    for m in matches:
-        canonical = _SKILL_CANONICAL.get(m.lower())
+    seen = set()
+
+    for m in _SKILL_PATTERN_CI.finditer(combined):
+        canonical = _SKILL_CANONICAL.get(m.group().lower())
         if canonical and canonical not in seen:
             seen.add(canonical)
             found.append(canonical)
-        if len(found) >= MAX_EXTRACTED_SKILLS:
-            break
+            if len(found) >= MAX_EXTRACTED_SKILLS: break
+
+    if len(found) < MAX_EXTRACTED_SKILLS:
+        for m in _SKILL_PATTERN_CS.finditer(combined):
+            canonical = m.group()
+            if canonical in _CASE_SENSITIVE_SKILLS and canonical not in seen:
+                seen.add(canonical)
+                found.append(canonical)
+                if len(found) >= MAX_EXTRACTED_SKILLS: break
     return found
 
 

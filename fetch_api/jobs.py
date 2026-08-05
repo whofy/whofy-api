@@ -3,7 +3,8 @@ from datetime import datetime, timezone, timedelta
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fetch_api.limiter import limiter
 
 from db.mongo import get_async_db
 from listings.shared.enrich import detect_experience, detect_work_type, extract_required_skills
@@ -48,20 +49,14 @@ def serialize_job(doc: dict, matched_skills: list[str] | None = None) -> dict:
 
     title = doc.get("title", "")
     location = doc.get("location", "Not specified")
-    # work_type/experience_level/required_skills are computed once at
-    # ingestion time from the FULL (untruncated) posting text and stored on
-    # the doc (see sources/shared/enrich.py) — required_skills is already
-    # baked into the stored description there too, so filtering is a plain
-    # Mongo query and search indexes the skill terms. Fallback to on-the-fly
-    # detection (against the short display text) only covers stray docs that
-    # somehow bypassed ingestion.
     desc = _clean_description(doc.get("description", ""))
-    work_type = doc.get("work_type") or detect_work_type(title, location, desc)
-    experience = doc.get("experience_level") or detect_experience(title, desc)
-    required_skills = doc.get("required_skills")
-    if required_skills is None:
-        required_skills = extract_required_skills(title, desc)
-
+    # work_type, experience_level, and required_skills are now strictly guaranteed by ingestion.
+    work_type = doc.get("work_type")
+    experience = doc.get("experience_level")
+    required_skills = doc.get("required_skills", [])
+    
+    posted_at = doc.get("posted_at")
+    
     job = {
         "id": str(doc["_id"]),
         "title": title,
@@ -69,7 +64,7 @@ def serialize_job(doc: dict, matched_skills: list[str] | None = None) -> dict:
         "location": location,
         "description": desc,
         "applyUrl": doc.get("apply_url", ""),
-        "postedAt": doc.get("posted_at") or None,
+        "postedAt": posted_at.isoformat() if isinstance(posted_at, datetime) else posted_at,
         "source": doc.get("source", ""),
         "workType": work_type,
         "experience": experience,
@@ -85,13 +80,12 @@ def _split_param(val: str, sep: str = r"[,|]") -> list[str]:
     return [s.strip() for s in re.split(sep, val) if s.strip()]
 
 
-def _posted_cutoff(posted: str) -> str | None:
+def _posted_cutoff(posted: str):
     mapping = {"today": 1, "week": 7, "month": 30}
     days = mapping.get(posted)
     if days is None:
         return None
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    return cutoff.isoformat()
+    return datetime.now(timezone.utc) - timedelta(days=days)
 
 
 def _build_filter(
@@ -134,7 +128,9 @@ def _build_filter(
 
 
 @router.get("/api/matches")
+@limiter.limit("30/minute")
 async def get_matches(
+    request: Request,
     limit: int = Query(50, ge=1, le=1000),
     skip: int = Query(0, ge=0),
     skills: str = Query(None, description="Comma-separated skills to rank matches by"),
@@ -184,7 +180,7 @@ async def get_matches(
         {"$limit": limit}
     ]
 
-    docs = await db.jobs.aggregate(pipeline).to_list(length=limit)
+    docs = await db.jobs.aggregate(pipeline, allowDiskUse=True).to_list(length=limit)
 
     return {
         "jobs": [serialize_job(doc, doc.get("matched_skills", [])) for doc in docs],
@@ -195,16 +191,19 @@ async def get_matches(
 
 
 @router.get("/api/search")
+@limiter.limit("30/minute")
 async def search_jobs(
+    request: Request,
     q: str = Query(..., min_length=2, description="Search query"),
     limit: int = Query(200, ge=1, le=1000),
+    skip: int = Query(0, ge=0),
 ):
     db = get_async_db()
     
     # Tokenize the query for strict matching
     tokens = re.findall(r"[a-z0-9+#.]+", q.lower())
     if not tokens:
-        docs = await db.jobs.find({"$text": {"$search": q}}).limit(limit).to_list(length=limit)
+        docs = await db.jobs.find({"$text": {"$search": q}}).skip(skip).limit(limit).to_list(length=limit)
         return [serialize_job(doc) for doc in docs]
 
     min_matches = len(tokens) if len(tokens) <= 3 else len(tokens) - 1
@@ -239,13 +238,14 @@ async def search_jobs(
         }},
         {"$match": {"total_hits": {"$gte": min_matches}}},
         {"$sort": {"title_hits": -1, "total_hits": -1, "score": -1, "_id": 1}},
+        {"$skip": skip},
         {"$limit": limit}
     ]
 
-    docs = await db.jobs.aggregate(pipeline).to_list(length=limit)
+    docs = await db.jobs.aggregate(pipeline, allowDiskUse=True).to_list(length=limit)
     if not docs:
         # Fallback to pure text search if strict matching yielded nothing
-        docs = await db.jobs.find({"$text": {"$search": q}}, {"score": {"$meta": "textScore"}}).sort([("score", {"$meta": "textScore"})]).limit(limit).to_list(length=limit)
+        docs = await db.jobs.find({"$text": {"$search": q}}, {"score": {"$meta": "textScore"}}).sort([("score", {"$meta": "textScore"})]).skip(skip).limit(limit).to_list(length=limit)
         
     return [serialize_job(doc) for doc in docs]
 
@@ -274,7 +274,8 @@ def _is_valid_location(loc: str) -> bool:
 
 
 @router.get("/api/locations")
-async def get_locations():
+@limiter.limit("10/minute")
+async def get_locations(request: Request):
     db = get_async_db()
     raw = [v for v in await db.jobs.distinct("location") if v and v.strip()]
     locations = set()
@@ -290,21 +291,24 @@ async def get_locations():
 
 
 @router.get("/api/companies")
-async def get_companies():
+@limiter.limit("10/minute")
+async def get_companies(request: Request):
     db = get_async_db()
     values = [v for v in await db.jobs.distinct("company") if v and v.strip()]
     return sorted(values)
 
 
 @router.get("/api/sources")
-async def get_sources():
+@limiter.limit("10/minute")
+async def get_sources(request: Request):
     db = get_async_db()
     values = [v for v in await db.jobs.distinct("source") if v and v.strip()]
     return sorted(values)
 
 
 @router.get("/api/jobs/{job_id}")
-async def get_job(job_id: str):
+@limiter.limit("60/minute")
+async def get_job(job_id: str, request: Request):
     try:
         oid = ObjectId(job_id)
     except InvalidId:

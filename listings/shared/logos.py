@@ -2,9 +2,10 @@ import re
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pymongo import UpdateOne
+from pydantic import ValidationError
 
+from models.job import CompanyLogo
 from listings.shared.storage import get_client, DB_NAME
-
 LOGOS_COLLECTION = "company_logos"
 
 KNOWN_DOMAINS = {
@@ -151,11 +152,18 @@ def attach_logos(jobs: list[dict]) -> int:
 
         ops = []
         for key, logo_url in new_logos.items():
-            ops.append(UpdateOne(
-                {"company_key": key},
-                {"$set": {"company_key": key, "logo_url": logo_url}},
-                upsert=True,
-            ))
+            raw_data = {"company_key": key, "logo_url": logo_url}
+            try:
+                validated_logo = CompanyLogo.model_validate(raw_data).model_dump(exclude_unset=True)
+                validated_logo.pop("_id", None)
+                ops.append(UpdateOne(
+                    {"company_key": key},
+                    {"$set": validated_logo},
+                    upsert=True,
+                ))
+            except ValidationError as e:
+                print(f"Schema validation failed for logo {key}: {e}")
+
         if ops:
             logos_col.bulk_write(ops, ordered=False)
 
@@ -170,5 +178,4 @@ def attach_logos(jobs: list[dict]) -> int:
             job["logo_url"] = logo_url
             attached += 1
 
-    client.close()
     return attached

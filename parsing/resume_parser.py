@@ -2,6 +2,9 @@ import asyncio
 import io
 import json
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 import fitz  # PyMuPDF
 from docx import Document
@@ -10,8 +13,8 @@ from fastapi import HTTPException
 from config.settings import settings
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB, matches Dropzone.jsx's stated limit
-PARSE_MODEL = "llama-3.3-70b-versatile"
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+PARSE_MODEL = "openai/gpt-oss-120b"
 
 RESUME_SCHEMA = {
     "type": "object",
@@ -26,7 +29,7 @@ RESUME_SCHEMA = {
 }
 
 PROMPT = """You are parsing a resume. Extract the following as JSON matching the schema:
-- skills: a flat list of technical/professional skills mentioned (max 15, most relevant first)
+- skills: a flat list of technical/professional skills mentioned (max 25). Include ALL distinct skill categories present (e.g. include both technical/programming skills AND methodology/domain skills like testing practices, if mentioned - do not prioritize one category over another).
 - location: the candidate's city, or "" if not stated
 - experienceLevel: one short phrase like "Fresher", "0-1 years", "2-3 years", or "" if unclear
 - education: list of degree/institution strings, most recent first
@@ -70,10 +73,10 @@ def _extract_docx_text(content: bytes) -> str:
 
 
 async def structure_resume(text: str) -> dict:
-    api_key = settings.groq_api_key
+    api_key = settings.groq_resume_parser_api_key
     if not api_key:
-        print("[Resume Parser] ERROR: GROQ_API_KEY is not set in .env")
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY environment variable is not set")
+        print("[Resume Parser] ERROR: GROQ_RESUME_PARSER_API_KEY is not set in .env")
+        raise HTTPException(status_code=500, detail="GROQ_RESUME_PARSER_API_KEY environment variable is not set")
 
     client = AsyncGroq(api_key=api_key)
 
@@ -84,14 +87,14 @@ async def structure_resume(text: str) -> dict:
                 {"role": "user", "content": PROMPT.format(text=text[:15000])}
             ],
             response_format={"type": "json_object"},
-            temperature=0.2,
+            temperature=0.0,
         )
-    except RateLimitError:
-        print("[Resume Parser] ERROR: Groq API rate limit reached.")
+    except RateLimitError as e:
+        logger.error(f"[Resume Parser] ERROR: Groq API rate limit reached — {e}")
         raise HTTPException(status_code=429, detail="Resume parsing is temporarily unavailable — API rate limit reached. Please try again later.")
     except APIError as e:
-        print(f"[Resume Parser] ERROR: Groq API error — {e}")
-        raise HTTPException(status_code=503, detail=f"Resume parsing failed: {e}")
+        logger.error(f"[Resume Parser] ERROR: Groq API error — {e}")
+        raise HTTPException(status_code=503, detail="Resume parsing failed due to an upstream service error. Please try again later.")
 
     return json.loads(response.choices[0].message.content)
 

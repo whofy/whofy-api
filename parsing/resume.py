@@ -25,9 +25,10 @@ async def upload_resume(file: UploadFile = File(...)):
             detail="Unsupported file format. Please upload a PDF or DOCX resume.",
         )
 
+    if getattr(file, "size", 0) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large. Max 10MB.")
+
     content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File too large. Max 5MB.")
 
     try:
         resume = await parse_resume(file.filename, content)

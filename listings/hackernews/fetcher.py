@@ -1,6 +1,7 @@
 import re
 import time
 import requests
+import html
 from datetime import datetime, timezone
 
 from listings.shared.enrich import (
@@ -78,11 +79,20 @@ def _fetch_comment(comment_id: int) -> dict | None:
 def _parse_header(text: str) -> dict:
     first_line = text.split("\n")[0].strip()
     first_line = re.sub(r"<[^>]+>", "", first_line).strip()
+    first_line = html.unescape(first_line)
 
     parts = re.split(r"\s*\|\s*", first_line)
 
     company = parts[0].strip() if len(parts) >= 1 else ""
     title = parts[1].strip() if len(parts) >= 2 else ""
+    
+    company_domain = ""
+    url_match = re.search(r"https?://(?:www\.)?([^\s/]+)", company)
+    if url_match:
+        company_domain = url_match.group(1)
+        company = re.sub(r"https?://[^\s]+", "", company).strip()
+        
+    company = re.sub(r"\W+$", "", company).strip()
     location = ""
     work_type = ""
 
@@ -105,6 +115,7 @@ def _parse_header(text: str) -> dict:
 
     return {
         "company": company,
+        "company_domain": company_domain if company_domain else None,
         "title": title,
         "location": location,
         "work_type": work_type,
@@ -147,11 +158,11 @@ def fetch_hn_jobs(thread_id: int, thread_date: str) -> list[dict]:
                 "source_job_id": f"hn_{comment_id}",
                 "title": header["title"],
                 "company": header["company"],
-                "company_domain": "",
+                "company_domain": header.get("company_domain", ""),
                 "location": header["location"],
                 "description": bake_required_skills(clean_text, required_skills),
                 "apply_url": f"https://news.ycombinator.com/item?id={comment_id}",
-                "posted_at": thread_date,
+                "posted_at": datetime.fromisoformat(thread_date.replace("Z", "+00:00")) if thread_date else None,
                 "work_type": wt,
                 "experience_level": detect_experience(header["title"], clean_text),
                 "required_skills": required_skills,
