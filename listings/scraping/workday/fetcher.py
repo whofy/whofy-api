@@ -5,10 +5,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
-from listings.shared.normalize import full_text, strip_html
+from listings.shared.pipeline import process_jobs_batch
 from listings.shared.storage import save_jobs
-from listings.shared.tech_filter import filter_tech_jobs
 
 MAX_AGE_DAYS = 30
 PAGE_SIZE = 20
@@ -218,13 +216,13 @@ def fetch_workday_jobs(company: dict) -> list[dict]:
 
     print(f"  -> {len(all_listings)} listings (within {MAX_AGE_DAYS} days)")
 
+    # Return raw jobs — process_jobs_batch handles enrichment via the shared pipeline.
+    # Workday's search API doesn't return descriptions; detection_text = title + location
+    # preserves the current behavior of using location as a signal for skill/work-type detection.
     normalized = []
     for listing in all_listings:
         title = listing["title"]
         location = listing["location"]
-        detection_text = f"{title} {location}"
-        required_skills = extract_required_skills(title, detection_text)
-
         normalized.append({
             "source": "workday",
             "source_job_id": listing["source_id"],
@@ -232,20 +230,16 @@ def fetch_workday_jobs(company: dict) -> list[dict]:
             "company": company["name"],
             "company_domain": company.get("domain", ""),
             "location": location,
-            "description": bake_required_skills(title, required_skills),
+            "raw_description": "",  # Workday API omits descriptions
+            "detection_text": f"{title} {location}",
             "apply_url": listing["apply_url"],
             "posted_at": listing["posted_at"],
-            "description": None,
-            "data_quality_flags": ["missing_description"],
-            "work_type": detect_work_type(title, location, detection_text),
-            "experience_level": detect_experience(title, detection_text),
-            "required_skills": required_skills,
         })
 
     return normalized
 
 
-def main():
+def main(mp_executor=None):
     all_jobs = []
 
     with ThreadPoolExecutor(max_workers=5) as executor:
@@ -261,11 +255,19 @@ def main():
 
     print(f"\nTotal jobs fetched: {len(all_jobs)}")
 
-    all_jobs = filter_tech_jobs(all_jobs)
-    print(f"After tech filter: {len(all_jobs)}")
+    print("Running process_jobs_batch (enrichment + filtering)...")
+    batch_result = process_jobs_batch(all_jobs, mp_executor=mp_executor)
+    accepted_jobs = batch_result["accepted"]
+    tech_filtered = batch_result["tech_filtered"]
+    lang_filtered = batch_result["lang_filtered"]
+    print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
+    print(f"Filtered (Tech): {tech_filtered}")
+    print(f"Filtered (Lang): {lang_filtered}")
 
-    if all_jobs:
-        result = save_jobs(all_jobs, source="workday")
+    if accepted_jobs:
+        result = save_jobs(accepted_jobs, source="workday")
+        result["tech_filtered"] = tech_filtered
+        result["non_english_skipped"] = lang_filtered
         print(f"Saved to MongoDB: {result}")
     else:
         print("No jobs to save.")

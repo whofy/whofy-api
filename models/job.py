@@ -15,7 +15,7 @@ def validate_object_id(v: Any) -> ObjectId:
 PyObjectId = Annotated[
     ObjectId,
     BeforeValidator(validate_object_id),
-    PlainSerializer(lambda x: str(x), return_type=str)
+    PlainSerializer(lambda x: str(x), return_type=str, when_used='json'),
 ]
 
 class DataQualityFlag(str, Enum):
@@ -48,11 +48,20 @@ class Job(BaseModel):
     
     # Optional fields
     description: Optional[str] = None
-    # We make company_domain strictly optional, as scrapers like LinkedIn/RemoteOK do not provide it.
-    # It will be derived/guessed at serialization time for the frontend.
+    # Optional — set by sources that hardcode a real company domain (Greenhouse,
+    # Ashby, Lever, Workday, Himalayas, HackerNews). Consumed at API-response time
+    # to build a Google-favicon URL. Adzuna / RemoteOK / WWR leave it None.
     company_domain: Optional[str] = None
-    
-    @field_validator("company_domain", "description", mode="before")
+    # Optional — set only when the source itself hands us a direct logo URL
+    # (RemoteOK's `company_logo` field). Takes priority over company_domain
+    # in serialize_job. Everyone else leaves it None.
+    logo_url: Optional[str] = None
+    # Cross-source dedup key: normalized(company + title + location).
+    # Same real-world job on multiple sources → same canonical_fingerprint.
+    # Consumed by pipeline/dedupe_jobs.py to remove duplicate rows.
+    canonical_fingerprint: Optional[str] = None
+
+    @field_validator("company_domain", "description", "logo_url", mode="before")
     @classmethod
     def normalize_optional_strings(cls, v):
         if v == "" or (isinstance(v, str) and not v.strip()):
@@ -90,19 +99,6 @@ class SavedJob(BaseModel):
     
     # Snapshot is now strictly required
     snapshot: SavedJobSnapshot
-    
-    model_config = ConfigDict(
-        populate_by_name=True,
-        arbitrary_types_allowed=True,
-    )
-
-class CompanyLogo(BaseModel):
-    """
-    Canonical schema for a Company Logo cache entry.
-    """
-    id: Optional[PyObjectId] = Field(alias="_id", default=None)
-    company_key: str
-    logo_url: Optional[str] = None
     
     model_config = ConfigDict(
         populate_by_name=True,

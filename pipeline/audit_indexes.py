@@ -2,8 +2,6 @@
 Utility script to audit MongoDB collection indexes, showing index sizes and usage stats.
 Run this script to identify unused or large indexes that could be removed to improve write performance.
 """
-import sys
-sys.path.insert(0, r"c:\Users\chara\Desktop\whofy\whofy-api")
 from listings.shared.storage import get_client, DB_NAME, JOBS_COLLECTION
 import pprint
 import pymongo

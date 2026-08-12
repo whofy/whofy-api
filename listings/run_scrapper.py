@@ -54,6 +54,7 @@ def run_source_concurrently(name, fetcher, is_heavy):
     log_prefix.set(name)
     start_time = time.time()
     print(f"Started fetching at {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
+    result = {"name": name, "status": "success", "duration": 0.0, "error": None}
     try:
         if is_heavy:
             with heavy_semaphore:
@@ -61,10 +62,13 @@ def run_source_concurrently(name, fetcher, is_heavy):
         else:
             fetcher()
     except Exception as e:
+        result["status"] = "failed"
+        result["error"] = str(e)
         print(f"ERROR in {name}: {e}")
     finally:
-        elapsed = time.time() - start_time
-        print(f"Completed in {elapsed:.2f} seconds")
+        result["duration"] = time.time() - start_time
+        print(f"Completed in {result['duration']:.2f} seconds")
+    return result
 
 def run_ingestion():
     start = time.time()
@@ -86,19 +90,34 @@ def run_ingestion():
     logger = ThreadPrefixLogger()
     sys.stdout = logger
     
+    results = []
     try:
         with ThreadPoolExecutor(max_workers=len(sources)) as executor:
             futures = [executor.submit(run_source_concurrently, name, fetcher, is_heavy) for name, fetcher, is_heavy in sources]
             for future in as_completed(futures):
-                future.result()
+                results.append(future.result())
     finally:
         sys.stdout = logger.original_stdout
 
-    print(f"\n--- Cleanup ---")
-    deleted = cleanup_expired_jobs()
-    print(f"Expired jobs removed: {deleted}")
-    non_eng = cleanup_non_english_jobs()
-    print(f"Non-English jobs removed: {non_eng}")
+    print(f"\n--- Source results ---")
+    for r in sorted(results, key=lambda x: x["name"]):
+        marker = "OK  " if r["status"] == "success" else "FAIL"
+        line = f"  [{marker}] {r['name']:15s} ({r['duration']:.1f}s)"
+        if r["error"]:
+            line += f" — {r['error']}"
+        print(line)
+
+    failed = [r for r in results if r["status"] == "failed"]
+
+    if failed:
+        print(f"\n{len(failed)} of {len(results)} source(s) FAILED — skipping cleanup to protect data.")
+        print(f"Failed: {', '.join(r['name'] for r in failed)}")
+    else:
+        print(f"\n--- Cleanup ---")
+        deleted = cleanup_expired_jobs()
+        print(f"Expired jobs removed: {deleted}")
+        non_eng = cleanup_non_english_jobs()
+        print(f"Non-English jobs removed: {non_eng}")
 
     print(f"\n--- Stats ---")
     stats = get_collection_stats()
@@ -108,6 +127,10 @@ def run_ingestion():
 
     elapsed = time.time() - start
     print(f"\nIngestion complete in {elapsed:.1f}s")
+
+    if failed:
+        print(f"EXIT: FAILURE — {len(failed)} source(s) failed")
+        sys.exit(1)
 
 if __name__ == "__main__":
     run_ingestion()
