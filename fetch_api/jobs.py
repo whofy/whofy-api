@@ -7,7 +7,6 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fetch_api.limiter import limiter
 
 from db.mongo import get_async_db
-from listings.shared.enrich import detect_experience, detect_work_type, extract_required_skills
 from listings.shared.normalize import strip_html
 
 router = APIRouter()
@@ -32,20 +31,16 @@ def _clean_description(desc: str) -> str:
     return "\n".join(cleaned).strip()
 
 
-def _guess_domain(company: str) -> str:
-    slug = re.sub(r"[^a-z0-9]", "", company.lower())
-    if not slug:
-        return ""
-    return f"{slug}.com"
-
-
 def serialize_job(doc: dict, matched_skills: list[str] | None = None) -> dict:
+    # Logo resolution — single source of truth, no guessing:
+    #   1. Source-provided direct URL (RemoteOK's company_logo field)
+    #   2. Google favicon of a source-provided real domain
+    #   3. null → frontend renders a colored-letter fallback
     logo_url = doc.get("logo_url")
     if not logo_url:
-        domain = doc.get("company_domain", "")
-        if not domain:
-            domain = _guess_domain(doc.get("company", ""))
-        logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128" if domain else None
+        domain = doc.get("company_domain")
+        if domain:
+            logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
 
     title = doc.get("title", "")
     location = doc.get("location", "Not specified")

@@ -71,13 +71,25 @@ Guidelines for your responses:
 """
 
 
-async def get_chat_response(message: str, history: list[dict]) -> str:
-    api_key = settings.groq_chatbot_api_key
-    if not api_key:
-        logger.error("[Chatbot] ERROR: GROQ_CHATBOT_API_KEY is not set in .env")
-        raise HTTPException(status_code=500, detail="Configuration error: API key is not set.")
+_groq_client: AsyncGroq | None = None
 
-    client = AsyncGroq(api_key=api_key)
+
+def _get_groq_client() -> AsyncGroq:
+    global _groq_client
+    if _groq_client is None:
+        api_key = settings.groq_chatbot_api_key
+        if not api_key:
+            logger.error("GROQ_CHATBOT_API_KEY is not set in .env")
+            raise HTTPException(
+                status_code=500,
+                detail="Chat is not configured. Please try again later.",
+            )
+        _groq_client = AsyncGroq(api_key=api_key)
+    return _groq_client
+
+
+async def get_chat_response(message: str, history: list[dict]) -> str:
+    client = _get_groq_client()
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for msg in history:

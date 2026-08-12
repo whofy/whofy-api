@@ -2,8 +2,6 @@
 Migration script to backfill compound 'fingerprint' strings onto older MongoDB documents.
 Run this if the deduplication strategy changes and older records need their fingerprint fields recomputed.
 """
-import sys
-sys.path.insert(0, r"c:\Users\chara\Desktop\whofy\whofy-api")
 from pymongo import UpdateOne
 from listings.shared.storage import get_client, DB_NAME, JOBS_COLLECTION, _fingerprint
 

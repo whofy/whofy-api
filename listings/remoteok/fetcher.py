@@ -40,6 +40,8 @@ def fetch_remoteok_jobs() -> list[dict]:
             "raw_description": raw_description,
             "apply_url": job.get("url", ""),
             "posted_at": datetime.fromisoformat(job.get("date").replace("Z", "+00:00")) if job.get("date") else None,
+            # RemoteOK is the only source that hands us a ready-made logo URL directly.
+            "logo_url": job.get("company_logo") or None,
         })
 
     return normalized

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from fetch_api.limiter import limiter
@@ -22,23 +22,19 @@ class SaveJobRequest(BaseModel):
 @router.post("/api/saved-jobs")
 @limiter.limit("30/minute")
 async def save_job(req: SaveJobRequest, request: Request, user_id: str = Depends(get_current_user)):
-    db = get_async_db()
-    existing = await db.saved_jobs.find_one({"user_id": user_id, "job_id": ObjectId(req.job_id)})
-    if existing:
-        return {"status": "already_saved"}
-
     try:
-        job_doc = await db.jobs.find_one({"_id": ObjectId(req.job_id)})
+        oid = ObjectId(req.job_id)
     except InvalidId:
         raise HTTPException(status_code=400, detail="Invalid job ID")
 
+    db = get_async_db()
+    job_doc = await db.jobs.find_one({"_id": oid})
     if not job_doc:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    
     saved_job_data = {
         "user_id": user_id,
-        "job_id": ObjectId(req.job_id),
+        "job_id": oid,
         "saved_at": datetime.now(timezone.utc),
         "snapshot": {
             "title": job_doc.get("title", ""),
@@ -46,23 +42,29 @@ async def save_job(req: SaveJobRequest, request: Request, user_id: str = Depends
             "location": job_doc.get("location", ""),
         }
     }
-    
-    try:
-        validated = SavedJob.model_validate(saved_job_data)
-        doc = validated.model_dump(by_alias=True)
-        if "_id" in doc and doc["_id"] is None:
-            del doc["_id"]
-        await db.saved_jobs.insert_one(doc)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Validation error: {e}")
-    return {"status": "saved"}
+    validated = SavedJob.model_validate(saved_job_data)
+    doc = validated.model_dump(by_alias=True)
+    if "_id" in doc and doc["_id"] is None:
+        del doc["_id"]
+
+    result = await db.saved_jobs.update_one(
+        {"user_id": user_id, "job_id": oid},
+        {"$setOnInsert": doc},
+        upsert=True,
+    )
+    return {"status": "saved" if result.upserted_id else "already_saved"}
 
 
 @router.delete("/api/saved-jobs/{job_id}")
 @limiter.limit("30/minute")
 async def unsave_job(job_id: str, request: Request, user_id: str = Depends(get_current_user)):
+    try:
+        oid = ObjectId(job_id)
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid job ID")
+
     db = get_async_db()
-    result = await db.saved_jobs.delete_one({"user_id": user_id, "job_id": ObjectId(job_id)})
+    result = await db.saved_jobs.delete_one({"user_id": user_id, "job_id": oid})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Saved job not found")
     return {"status": "removed"}
@@ -70,27 +72,28 @@ async def unsave_job(job_id: str, request: Request, user_id: str = Depends(get_c
 
 @router.get("/api/saved-jobs")
 @limiter.limit("30/minute")
-async def get_saved_jobs(request: Request, user_id: str = Depends(get_current_user)):
+async def get_saved_jobs(
+    request: Request,
+    user_id: str = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+):
     db = get_async_db()
-    saved_docs = await db.saved_jobs.find({"user_id": user_id}).sort("saved_at", -1).to_list(length=1000)
+    total = await db.saved_jobs.count_documents({"user_id": user_id})
+    saved_docs = await db.saved_jobs.find({"user_id": user_id}) \
+        .sort([("saved_at", -1), ("_id", -1)]) \
+        .skip(skip).limit(limit).to_list(length=limit)
 
-    oids = []
-    valid_saved_docs = []
-    for saved in saved_docs:
-        try:
-            oid = saved["job_id"]
-            oids.append(oid)
-            valid_saved_docs.append((oid, saved))
-        except InvalidId:
-            continue
+    oids = [saved["job_id"] for saved in saved_docs]
 
     jobs_by_id = {}
     if oids:
-        job_docs = await db.jobs.find({"_id": {"$in": oids}}).to_list(length=1000)
+        job_docs = await db.jobs.find({"_id": {"$in": oids}}).to_list(length=len(oids))
         jobs_by_id = {doc["_id"]: doc for doc in job_docs}
 
     jobs = []
-    for oid, saved in valid_saved_docs:
+    for saved in saved_docs:
+        oid = saved["job_id"]
         job_doc = jobs_by_id.get(oid)
         if job_doc:
             job = serialize_job(job_doc)
@@ -99,7 +102,7 @@ async def get_saved_jobs(request: Request, user_id: str = Depends(get_current_us
         else:
             snapshot = saved.get("snapshot", {})
             job = {
-                "id": saved["job_id"],
+                "id": str(saved["job_id"]),
                 "title": snapshot.get("title", "Unknown role"),
                 "company": snapshot.get("company", "Unknown company"),
                 "location": snapshot.get("location", ""),
@@ -108,7 +111,7 @@ async def get_saved_jobs(request: Request, user_id: str = Depends(get_current_us
             }
         jobs.append(job)
 
-    return jobs
+    return {"jobs": jobs, "total": total, "skip": skip, "limit": limit}
 
 
 @router.get("/api/saved-jobs/ids")
