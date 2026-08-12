@@ -3,7 +3,7 @@ load_dotenv()
 
 from pymongo import UpdateOne
 
-from mongDB.mongo import get_db
+from db.mongo import get_db
 from listings.shared.enrich import detect_experience, detect_work_type, extract_required_skills
 
 

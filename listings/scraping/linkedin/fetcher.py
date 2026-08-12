@@ -6,10 +6,9 @@ from urllib.parse import urlencode
 import requests
 from bs4 import BeautifulSoup
 
-from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
-from listings.shared.normalize import full_text, strip_html
+from listings.shared.pipeline import process_jobs_batch
 from listings.shared.storage import save_jobs
-from listings.shared.tech_filter import filter_tech_jobs, is_tech_job
+from listings.shared.tech_filter import is_tech_job
 
 SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 DETAIL_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting"
@@ -76,17 +75,23 @@ def _clean_apply_url(url: str) -> str:
     return url.split("?")[0].rstrip("/")
 
 
-def _is_within_age(posted_at: str) -> bool:
+def _is_within_age(posted_at) -> bool:
+    """F-13 fix — accept datetime | str | None, don't crash on wrong type."""
     if not posted_at:
         return True
-    try:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
-        posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
-        if posted.tzinfo is None:
-            posted = posted.replace(tzinfo=timezone.utc)
-        return posted >= cutoff
-    except (ValueError, TypeError):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+    if isinstance(posted_at, datetime):
+        posted = posted_at
+    elif isinstance(posted_at, str):
+        try:
+            posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+    else:
         return True
+    if posted.tzinfo is None:
+        posted = posted.replace(tzinfo=timezone.utc)
+    return posted >= cutoff
 
 
 def _build_search_url(keywords: str, location: str, start: int) -> str:
@@ -132,7 +137,7 @@ def _parse_search_page(html: str) -> list[dict]:
             "company": company,
             "location": location,
             "apply_url": apply_url or f"https://www.linkedin.com/jobs/view/{job_id}",
-            "posted_at": posted_at,
+            "posted_at": datetime.fromisoformat(posted_at.replace("Z", "+00:00")) if posted_at else None,
         })
 
     return listings
@@ -233,6 +238,11 @@ def _collect_listings() -> list[dict]:
 
 
 def _enrich_listings(listings: list[dict]) -> list[dict]:
+    """
+    Post-F-13: returns RAW jobs (no inline enrichment).
+    process_jobs_batch will run tech/lang filters + skill/work-type/experience detection.
+    posted_at is passed through as-is (datetime, str, or None — process_jobs_batch handles it).
+    """
     normalized = []
 
     for i, listing in enumerate(listings):
@@ -244,22 +254,15 @@ def _enrich_listings(listings: list[dict]) -> list[dict]:
         location = detail.get("location") or listing["location"]
         raw_description = detail.get("raw_description", "")
 
-        description = strip_html(raw_description) if raw_description else title
-        detection_text = full_text(raw_description) if raw_description else f"{title} {location}"
-        required_skills = extract_required_skills(title, detection_text)
-
         normalized.append({
             "source": "linkedin",
             "source_job_id": f"li_{job_id}",
             "title": title,
             "company": company,
             "location": location,
-            "description": bake_required_skills(description, required_skills),
+            "raw_description": raw_description,
             "apply_url": listing["apply_url"],
-            "posted_at": listing.get("posted_at", ""),
-            "work_type": detect_work_type(title, location, detection_text),
-            "experience_level": detect_experience(title, detection_text),
-            "required_skills": required_skills,
+            "posted_at": listing.get("posted_at"),  # datetime from _parse_search_page — no more crashes
         })
 
         if (i + 1) % 10 == 0 or i == 0:
@@ -282,17 +285,24 @@ def fetch_linkedin_jobs() -> list[dict]:
     return _enrich_listings(listings)
 
 
-def main():
+def main(mp_executor=None):
     print("Fetching LinkedIn jobs...")
     all_jobs = fetch_linkedin_jobs()
-
     print(f"\nTotal jobs fetched: {len(all_jobs)}")
 
-    all_jobs = filter_tech_jobs(all_jobs)
-    print(f"After tech filter: {len(all_jobs)}")
+    print("Running process_jobs_batch (enrichment + filtering)...")
+    batch_result = process_jobs_batch(all_jobs, mp_executor=mp_executor)
+    accepted_jobs = batch_result["accepted"]
+    tech_filtered = batch_result["tech_filtered"]
+    lang_filtered = batch_result["lang_filtered"]
+    print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
+    print(f"Filtered (Tech): {tech_filtered}")
+    print(f"Filtered (Lang): {lang_filtered}")
 
-    if all_jobs:
-        result = save_jobs(all_jobs, source="linkedin")
+    if accepted_jobs:
+        result = save_jobs(accepted_jobs, source="linkedin")
+        result["tech_filtered"] = tech_filtered
+        result["non_english_skipped"] = lang_filtered
         print(f"Saved to MongoDB: {result}")
     else:
         print("No jobs to save.")

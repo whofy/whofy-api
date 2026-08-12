@@ -1,4 +1,6 @@
+from datetime import datetime
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
 from listings.shared.normalize import extract_bullets, first_paragraph
 from listings.shared.storage import save_jobs
@@ -62,11 +64,8 @@ def fetch_lever_jobs(company: dict) -> list[dict]:
         detection_text = "\n".join([description_plain] + all_bullets)
 
         title = job.get("text", "")
-        required_skills = extract_required_skills(title, detection_text)
-
         workplace_type = WORKPLACE_TYPE_MAP.get((categories.get("workplaceType") or "").lower())
-        work_type = workplace_type or detect_work_type(title, location, detection_text)
-
+        
         normalized.append({
             "source": "lever",
             "source_job_id": f"lv_{job['id']}",
@@ -74,32 +73,53 @@ def fetch_lever_jobs(company: dict) -> list[dict]:
             "company": company["name"],
             "company_domain": company.get("domain", ""),
             "location": location,
-            "description": bake_required_skills(description, required_skills),
+            "description": description,
+            "detection_text": detection_text,
             "apply_url": job.get("hostedUrl", ""),
-            "posted_at": "",
-            "work_type": work_type,
-            "experience_level": detect_experience(title, detection_text),
-            "required_skills": required_skills,
+            "posted_at": None,
+            "data_quality_flags": ["missing_posted_at"],
+            "work_type": workplace_type,
         })
 
     return normalized
 
 
-def main():
+from listings.shared.pipeline import process_jobs_batch
+
+def main(mp_executor=None):
     all_jobs = []
 
-    for company in COMPANIES:
-        print(f"Fetching jobs for {company['name']}...")
-        jobs = fetch_lever_jobs(company)
-        all_jobs.extend(jobs)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fetch_lever_jobs, company): company for company in COMPANIES}
+        for future in as_completed(futures):
+            company = futures[future]
+            print(f"Fetching jobs for {company['name']}...")
+            try:
+                jobs = future.result()
+                all_jobs.extend(jobs)
+            except Exception as e:
+                print(f"Error processing {company['name']}: {e}")
 
+    import time
+    t_start = time.time()
+    
     print(f"\nTotal jobs fetched: {len(all_jobs)}")
 
-    all_jobs = filter_tech_jobs(all_jobs)
-    print(f"After tech filter: {len(all_jobs)}")
+    print("Running process_jobs_batch (enrichment + filtering)...")
+    batch_result = process_jobs_batch(all_jobs, mp_executor=mp_executor)
+    accepted_jobs = batch_result["accepted"]
+    tech_filtered = batch_result["tech_filtered"]
+    lang_filtered = batch_result["lang_filtered"]
+    
+    t_filter = time.time()
+    print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
+    print(f"Filtered (Tech): {tech_filtered}")
+    print(f"Filtered (Lang): {lang_filtered}")
 
-    if all_jobs:
-        result = save_jobs(all_jobs, source="lever")
+    if accepted_jobs:
+        result = save_jobs(accepted_jobs, source="lever")
+        result["tech_filtered"] = tech_filtered
+        result["non_english_skipped"] = lang_filtered
         print(f"Saved to MongoDB: {result}")
     else:
         print("No jobs to save.")

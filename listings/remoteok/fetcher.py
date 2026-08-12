@@ -1,3 +1,4 @@
+from datetime import datetime
 import requests
 from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
 from listings.shared.normalize import full_text, strip_html
@@ -28,39 +29,50 @@ def fetch_remoteok_jobs() -> list[dict]:
     normalized = []
     for job in raw_jobs:
         raw_description = job.get("description", "")
-        description = strip_html(raw_description)
-        detection_text = full_text(raw_description)
         title = job.get("position", "")
         location = job.get("location", "Remote")
-        required_skills = extract_required_skills(title, detection_text)
         normalized.append({
             "source": "remoteok",
             "source_job_id": f"rok_{job.get('id', '')}",
             "title": title,
             "company": job.get("company", ""),
             "location": location,
-            "description": bake_required_skills(description, required_skills),
+            "raw_description": raw_description,
             "apply_url": job.get("url", ""),
-            "posted_at": job.get("date", ""),
-            "work_type": detect_work_type(title, location, detection_text),
-            "experience_level": detect_experience(title, detection_text),
-            "required_skills": required_skills,
+            "posted_at": datetime.fromisoformat(job.get("date").replace("Z", "+00:00")) if job.get("date") else None,
+            # RemoteOK is the only source that hands us a ready-made logo URL directly.
+            "logo_url": job.get("company_logo") or None,
         })
 
     return normalized
 
 
-def main():
+from listings.shared.pipeline import process_jobs_batch
+
+def main(mp_executor=None):
     print("Fetching RemoteOK jobs...")
     jobs = fetch_remoteok_jobs()
 
+    import time
+    t_start = time.time()
+    
     print(f"\nTotal jobs fetched: {len(jobs)}")
 
-    jobs = filter_tech_jobs(jobs)
-    print(f"After tech filter: {len(jobs)}")
+    print("Running process_jobs_batch (enrichment + filtering)...")
+    batch_result = process_jobs_batch(jobs, mp_executor=mp_executor)
+    accepted_jobs = batch_result["accepted"]
+    tech_filtered = batch_result["tech_filtered"]
+    lang_filtered = batch_result["lang_filtered"]
+    
+    t_filter = time.time()
+    print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
+    print(f"Filtered (Tech): {tech_filtered}")
+    print(f"Filtered (Lang): {lang_filtered}")
 
-    if jobs:
-        result = save_jobs(jobs, source="remoteok")
+    if accepted_jobs:
+        result = save_jobs(accepted_jobs, source="remoteok")
+        result["tech_filtered"] = tech_filtered
+        result["non_english_skipped"] = lang_filtered
         print(f"Saved to MongoDB: {result}")
     else:
         print("No jobs to save.")

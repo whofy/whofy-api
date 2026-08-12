@@ -1,102 +1,59 @@
 import re
-import requests
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
-from pymongo import MongoClient, UpdateOne
-import certifi
+from pathlib import Path
 
-from config.settings import settings
+import yaml
+from pymongo import UpdateOne
+try:
+    from langdetect import detect, LangDetectException, DetectorFactory
+    DetectorFactory.seed = 0
+except ImportError:
+    pass
 
-MONGODB_URI = settings.mongodb_uri
+from db.mongo import get_client
+
 DB_NAME = "whofy"
 JOBS_COLLECTION = "jobs"
-LOGOS_COLLECTION = "company_logos"
 DEFAULT_SOURCE_CAP = 20000
 EXPIRY_DAYS = 28
 MAX_AGE_DAYS = 28
 
 
-def get_client() -> MongoClient:
-    if not MONGODB_URI:
-        raise RuntimeError("MONGODB_URI environment variable is not set")
-    return MongoClient(MONGODB_URI, tlsCAFile=certifi.where())
-
-
-def _fingerprint(title: str, company: str) -> str:
-    raw = f"{title}||{company}".lower()
+def _fingerprint(source: str, source_job_id: str) -> str:
+    """Source-scoped upsert key — same source's same job → same fingerprint."""
+    raw = f"{source}||{source_job_id}".lower()
     return re.sub(r"[^a-z0-9|]", "", raw)
 
 
-def is_link_alive(url: str) -> bool:
-    try:
-        resp = requests.head(url, timeout=5, allow_redirects=True,
-                             headers={"User-Agent": "Whofy Link Checker"})
-        return resp.status_code < 400
-    except requests.RequestException:
-        return False
+# Company legal suffixes — stripped when computing canonical_fingerprint so
+# "Anthropic PBC" and "Anthropic" collapse to the same key.
+_LEGAL_SUFFIXES_RE = re.compile(
+    r"\b(inc|llc|corp|corporation|ltd|limited|pbc|gmbh|co)\b",
+    re.IGNORECASE,
+)
 
 
-def filter_dead_links(jobs: list[dict]) -> tuple[list[dict], int]:
-    if not jobs:
-        return jobs, 0
+def _canonical_fingerprint(company: str, title: str, location: str) -> str:
+    """
+    Cross-source dedup key. Same real-world job on multiple sources → same fingerprint.
+    Consumed by pipeline/dedupe_jobs.py to remove duplicate rows.
+    """
+    def norm(s: str) -> str:
+        s = (s or "").lower()
+        s = _LEGAL_SUFFIXES_RE.sub("", s)
+        s = re.sub(r"[^a-z0-9]", "", s)
+        return s
+    return f"{norm(company)}||{norm(title)}||{norm(location)}"
 
-    urls = [job.get("apply_url", "") for job in jobs]
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(is_link_alive, urls))
-
-    alive = [job for job, ok in zip(jobs, results) if ok]
-    dead_count = len(jobs) - len(alive)
-    return alive, dead_count
-
-
-COUNTRY_CODE_MAP = {
-    "in": "India", "ind": "India", "india": "India",
-    "us": "United States", "usa": "United States", "united states": "United States",
-    "uk": "United Kingdom", "gb": "United Kingdom", "united kingdom": "United Kingdom",
-    "ca": "Canada", "canada": "Canada",
-    "au": "Australia", "australia": "Australia",
-    "de": "Germany", "germany": "Germany",
-    "fr": "France", "france": "France",
-    "nl": "Netherlands", "netherlands": "Netherlands",
-    "sg": "Singapore", "singapore": "Singapore",
-    "br": "Brazil", "brazil": "Brazil",
-    "nz": "New Zealand", "new zealand": "New Zealand",
-    "pl": "Poland", "poland": "Poland",
-    "ae": "UAE", "uae": "UAE", "united arab emirates": "UAE",
-    "jp": "Japan", "japan": "Japan",
-    "kr": "South Korea", "south korea": "South Korea",
-    "cn": "China", "china": "China",
-    "ie": "Ireland", "ireland": "Ireland",
-    "il": "Israel", "israel": "Israel",
-    "se": "Sweden", "sweden": "Sweden",
-    "ch": "Switzerland", "switzerland": "Switzerland",
-    "es": "Spain", "spain": "Spain",
-    "it": "Italy", "italy": "Italy",
-    "mx": "Mexico", "mexico": "Mexico",
-}
-
-KNOWN_CITIES = {
-    "mumbai": "India", "delhi": "India", "bengaluru": "India", "bangalore": "India",
-    "hyderabad": "India", "chennai": "India", "kolkata": "India", "pune": "India",
-    "ahmedabad": "India", "jaipur": "India", "lucknow": "India", "kanpur": "India",
-    "nagpur": "India", "indore": "India", "thane": "India", "bhopal": "India",
-    "visakhapatnam": "India", "noida": "India", "gurugram": "India", "gurgaon": "India",
-    "chandigarh": "India", "coimbatore": "India", "kochi": "India", "cochin": "India",
-    "thiruvananthapuram": "India", "trivandrum": "India", "mangalore": "India",
-    "mysore": "India", "mysuru": "India", "vadodara": "India", "surat": "India",
-    "rajkot": "India", "mohali": "India", "goa": "India", "dehradun": "India",
-    "patna": "India", "ranchi": "India", "bhubaneswar": "India", "guwahati": "India",
-    "new york": "United States", "san francisco": "United States", "seattle": "United States",
-    "austin": "United States", "chicago": "United States", "boston": "United States",
-    "los angeles": "United States", "denver": "United States", "atlanta": "United States",
-    "london": "United Kingdom", "berlin": "Germany", "paris": "France",
-    "toronto": "Canada", "vancouver": "Canada", "sydney": "Australia",
-    "melbourne": "Australia", "amsterdam": "Netherlands", "dublin": "Ireland",
-    "singapore": "Singapore", "tokyo": "Japan",
-}
-
-REMOTE_KEYWORDS = {"remote", "work from home", "wfh", "anywhere", "distributed"}
+# ── Location canonicalization data loaded from data/locations.yml ──
+# To add cities/countries/states/remote-keywords, edit data/locations.yml.
+_LOCATIONS_YML = Path(__file__).parent.parent.parent / 'data' / 'locations.yml'
+_loc_data = yaml.safe_load(_LOCATIONS_YML.read_text(encoding='utf-8'))
+COUNTRY_CODE_MAP = _loc_data['country_codes']
+KNOWN_CITIES = _loc_data['known_cities']
+_STATES = set(_loc_data['states'])
+REMOTE_KEYWORDS = set(_loc_data['remote_keywords'])
 
 STRIP_PATTERNS = [
     re.compile(r"\s*-\s*[^,]+(?=,|$)"),
@@ -132,36 +89,36 @@ def _normalize_location(raw: str) -> str:
 
     city = None
     country = None
+    conflict = False
 
     for part in parts:
         lower = part.lower().strip()
         if lower in COUNTRY_CODE_MAP:
-            country = COUNTRY_CODE_MAP[lower]
+            matched_country = COUNTRY_CODE_MAP[lower]
+            if country and country != matched_country:
+                conflict = True
+            country = matched_country
         elif lower in KNOWN_CITIES:
-            city = part.strip()
+            city_name = part.strip()
+            # If city is already set and it's a different city, conflict
+            if city and city.lower() != city_name.lower():
+                conflict = True
+            city = city_name
+            
+            matched_country = KNOWN_CITIES[lower]
+            if country and country != matched_country:
+                conflict = True
             if not country:
-                country = KNOWN_CITIES[lower]
+                country = matched_country
+
+    if conflict:
+        return raw.strip()
 
     if not city:
         for part in parts:
             lower = part.lower().strip()
             if lower not in COUNTRY_CODE_MAP and lower not in KNOWN_CITIES:
-                if not any(lower == s for s in [
-                    "telangana", "karnataka", "maharashtra", "tamil nadu",
-                    "andhra pradesh", "west bengal", "rajasthan", "gujarat",
-                    "uttar pradesh", "madhya pradesh", "kerala", "haryana",
-                    "bihar", "odisha", "jharkhand", "assam", "punjab",
-                    "uttarakhand", "himachal pradesh", "chhattisgarh",
-                    "california", "texas", "new york", "washington",
-                    "massachusetts", "illinois", "colorado", "georgia",
-                    "florida", "virginia", "oregon", "pennsylvania",
-                    "north carolina", "ohio", "michigan", "minnesota",
-                    "maryland", "connecticut", "new jersey", "arizona",
-                    "england", "scotland", "wales",
-                    "ontario", "british columbia", "quebec",
-                    "bavaria", "hesse", "north rhine-westphalia",
-                    "new south wales", "victoria", "queensland",
-                ]):
+                if lower not in _STATES:
                     city = part.strip()
                     break
 
@@ -175,33 +132,40 @@ def _normalize_location(raw: str) -> str:
 
 
 def _is_non_english(job: dict) -> bool:
-    title = job.get("title", "")
-    company = job.get("company", "")
-    desc = job.get("description", "")[:500]
-    for text in [title, company]:
-        if not text:
-            continue
-        non_latin = sum(1 for c in text if ord(c) > 127 and not c.isspace())
-        if non_latin > 0 and non_latin / max(len(text), 1) > 0.1:
-            return True
-    if desc:
-        non_latin = sum(1 for c in desc if ord(c) > 127 and not c.isspace())
-        if non_latin / max(len(desc), 1) > 0.15:
-            return True
-    return False
+    if job.get("lang_checked"):
+        return False
+        
+    title = job.get("title") or ""
+    desc = job.get("description") or ""
+    desc = desc[:500]
+    
+    text = f"{title} {desc}".strip()
+    if not text:
+        return False
+        
+    try:
+        lang = detect(text)
+        return lang != "en"
+    except Exception:
+        return False
 
 
-def _is_too_old(posted_at: str) -> bool:
+def _is_too_old(posted_at) -> bool:
     if not posted_at:
         return False
-    try:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
-        posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
-        if posted.tzinfo is None:
-            posted = posted.replace(tzinfo=timezone.utc)
-        return posted < cutoff
-    except (ValueError, TypeError):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+    if isinstance(posted_at, datetime):
+        posted = posted_at
+    elif isinstance(posted_at, str):
+        try:
+            posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    else:
         return False
+    if posted.tzinfo is None:
+        posted = posted.replace(tzinfo=timezone.utc)
+    return posted < cutoff
 
 
 def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> dict:
@@ -221,11 +185,16 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         if raw_loc:
             job["location"] = _normalize_location(raw_loc)
 
-    from listings.shared.logos import attach_logos
-    logos_attached = attach_logos(jobs)
-
     for job in jobs:
-        job["fingerprint"] = _fingerprint(job.get("title", ""), job.get("company", ""))
+        job["fingerprint"] = _fingerprint(source, job.get("source_job_id", ""))
+        # Cross-source dedup key — populated on every save. Same real-world job
+        # from multiple sources gets the same value. Cleanup handled by
+        # pipeline/dedupe_jobs.py running after ingestion.
+        job["canonical_fingerprint"] = _canonical_fingerprint(
+            job.get("company", ""),
+            job.get("title", ""),
+            job.get("location", ""),
+        )
 
     capped = False
     if len(jobs) > cap:
@@ -250,16 +219,32 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
     now = datetime.now(timezone.utc).isoformat()
     skipped = 0
 
+    from models.job import Job
     operations = []
+    schema_rejected = 0
     for job in jobs:
         if job["fingerprint"] in existing:
             skipped += 1
             continue
         job["last_seen_at"] = now
+        job["lang_checked"] = True
+
+        if "added_at" not in job:
+            job["added_at"] = now
+
+        try:
+            validated_job = Job.model_validate(job).model_dump(by_alias=True)
+        except Exception:
+            schema_rejected += 1
+            continue
+
+        added_at_val = validated_job.pop("added_at", now)
+        validated_job.pop("_id", None)
+
         operations.append(
             UpdateOne(
-                {"source": source, "source_job_id": job["source_job_id"]},
-                {"$set": job, "$setOnInsert": {"added_at": now}},
+                {"source": source, "source_job_id": validated_job["source_job_id"]},
+                {"$set": validated_job, "$setOnInsert": {"added_at": added_at_val}},
                 upsert=True,
             )
         )
@@ -273,7 +258,7 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         "cross_source_skipped": skipped,
         "too_old_skipped": too_old,
         "non_english_skipped": non_english,
-        "logos_attached": logos_attached,
+        "schema_rejected": schema_rejected,
     }
 
     if operations:
@@ -281,9 +266,23 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         result_info["upserted"] = result.upserted_count
         result_info["modified"] = result.modified_count
 
-    client.close()
+    if schema_rejected > 0:
+        print(f"[{source}] SCHEMA REJECTED: {schema_rejected} jobs")
+
     return result_info
 
+
+from concurrent.futures import ProcessPoolExecutor
+
+def _process_batch(docs):
+    to_delete = []
+    to_mark = []
+    for doc in docs:
+        if _is_non_english(doc):
+            to_delete.append(doc["_id"])
+        else:
+            to_mark.append(doc["_id"])
+    return {"to_delete": to_delete, "to_mark": to_mark}
 
 def cleanup_non_english_jobs() -> int:
     client = get_client()
@@ -291,32 +290,40 @@ def cleanup_non_english_jobs() -> int:
     collection = db[JOBS_COLLECTION]
 
     removed = 0
-    for doc in collection.find({}, {"title": 1, "company": 1}):
-        if _is_non_english(doc):
-            collection.delete_one({"_id": doc["_id"]})
-            removed += 1
+    batch_size = 2000
+    batch = []
 
-    client.close()
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        futures = []
+        for doc in collection.find({"lang_checked": {"$ne": True}}, {"title": 1, "description": 1}):
+            batch.append(doc)
+            if len(batch) >= batch_size:
+                futures.append(executor.submit(_process_batch, batch))
+                batch = []
+        if batch:
+            futures.append(executor.submit(_process_batch, batch))
+            
+        all_to_delete = []
+        all_to_mark = []
+        for future in futures:
+            res = future.result()
+            all_to_delete.extend(res["to_delete"])
+            all_to_mark.extend(res["to_mark"])
+
+    if all_to_delete:
+        chunk_size = 1000
+        for i in range(0, len(all_to_delete), chunk_size):
+            chunk = all_to_delete[i:i + chunk_size]
+            collection.delete_many({"_id": {"$in": chunk}})
+        removed = len(all_to_delete)
+        
+    if all_to_mark:
+        chunk_size = 1000
+        for i in range(0, len(all_to_mark), chunk_size):
+            chunk = all_to_mark[i:i + chunk_size]
+            collection.update_many({"_id": {"$in": chunk}}, {"$set": {"lang_checked": True}})
+
     return removed
-
-
-def normalize_existing_locations() -> int:
-    client = get_client()
-    db = client[DB_NAME]
-    collection = db[JOBS_COLLECTION]
-
-    updated = 0
-    for doc in collection.find({}, {"location": 1}):
-        raw = doc.get("location", "")
-        if not raw:
-            continue
-        normalized = _normalize_location(raw)
-        if normalized != raw:
-            collection.update_one({"_id": doc["_id"]}, {"$set": {"location": normalized}})
-            updated += 1
-
-    client.close()
-    return updated
 
 
 def cleanup_expired_jobs(expiry_days: int = EXPIRY_DAYS) -> int:
@@ -324,14 +331,8 @@ def cleanup_expired_jobs(expiry_days: int = EXPIRY_DAYS) -> int:
     db = client[DB_NAME]
     collection = db[JOBS_COLLECTION]
 
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=expiry_days)).isoformat()
-    result = collection.delete_many({
-        "$or": [
-            {"added_at": {"$lt": cutoff}},
-            {"added_at": {"$exists": False}, "last_seen_at": {"$lt": cutoff}},
-        ]
-    })
-    client.close()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=expiry_days)
+    result = collection.delete_many({"last_seen_at": {"$lt": cutoff}})
     return result.deleted_count
 
 
@@ -341,17 +342,18 @@ def ensure_indexes():
     collection = db[JOBS_COLLECTION]
 
     collection.create_index([("source", 1), ("source_job_id", 1)], unique=True)
+    collection.create_index([("posted_at", -1), ("_id", 1)])
     collection.create_index([("last_seen_at", -1)])
     collection.create_index([("added_at", -1)])
-    collection.create_index([("fingerprint", 1)])
     collection.create_index([("title", "text"), ("description", "text")])
     collection.create_index([("work_type", 1)])
     collection.create_index([("experience_level", 1)])
+    collection.create_index("canonical_fingerprint")  # for cross-source dedup grouping
 
-    logos_col = db[LOGOS_COLLECTION]
-    logos_col.create_index("company_key", unique=True)
+    saved_jobs_col = db["saved_jobs"]
+    saved_jobs_col.create_index([("user_id", 1), ("job_id", 1)], unique=True)
+    saved_jobs_col.create_index([("user_id", 1), ("saved_at", -1)])
 
-    client.close()
     print("Indexes ensured.")
 
 
@@ -363,7 +365,6 @@ def get_collection_stats() -> dict:
     total = collection.count_documents({})
     pipeline = [{"$group": {"_id": "$source", "count": {"$sum": 1}}}]
     per_source = {doc["_id"]: doc["count"] for doc in collection.aggregate(pipeline)}
-    client.close()
     return {"total_jobs": total, "per_source": per_source}
 
 

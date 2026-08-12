@@ -1,14 +1,11 @@
 import re
 import time
 import requests
+import html
 from datetime import datetime, timezone
 
-from listings.shared.enrich import (
-    bake_required_skills, detect_experience, detect_work_type, extract_required_skills,
-)
-from listings.shared.normalize import strip_html
+from listings.shared.pipeline import process_jobs_batch
 from listings.shared.storage import save_jobs
-from listings.shared.tech_filter import filter_tech_jobs
 
 ALGOLIA_API = "https://hn.algolia.com/api/v1/search_by_date"
 FIREBASE_ITEM = "https://hacker-news.firebaseio.com/v0/item/{id}.json"
@@ -78,11 +75,20 @@ def _fetch_comment(comment_id: int) -> dict | None:
 def _parse_header(text: str) -> dict:
     first_line = text.split("\n")[0].strip()
     first_line = re.sub(r"<[^>]+>", "", first_line).strip()
+    first_line = html.unescape(first_line)
 
     parts = re.split(r"\s*\|\s*", first_line)
 
     company = parts[0].strip() if len(parts) >= 1 else ""
     title = parts[1].strip() if len(parts) >= 2 else ""
+    
+    company_domain = ""
+    url_match = re.search(r"https?://(?:www\.)?([^\s/]+)", company)
+    if url_match:
+        company_domain = url_match.group(1)
+        company = re.sub(r"https?://[^\s]+", "", company).strip()
+        
+    company = re.sub(r"\W+$", "", company).strip()
     location = ""
     work_type = ""
 
@@ -105,6 +111,7 @@ def _parse_header(text: str) -> dict:
 
     return {
         "company": company,
+        "company_domain": company_domain if company_domain else None,
         "title": title,
         "location": location,
         "work_type": work_type,
@@ -135,27 +142,21 @@ def fetch_hn_jobs(thread_id: int, thread_date: str) -> list[dict]:
             if not header["company"] or not header["title"]:
                 continue
 
-            clean_text = strip_html(text)
-            required_skills = extract_required_skills(header["title"], clean_text)
-
-            wt = header["work_type"]
-            if not wt:
-                wt = detect_work_type(header["title"], header["location"], clean_text)
-
-            all_jobs.append({
+            job = {
                 "source": "hackernews",
                 "source_job_id": f"hn_{comment_id}",
                 "title": header["title"],
                 "company": header["company"],
-                "company_domain": "",
+                "company_domain": header.get("company_domain", ""),
                 "location": header["location"],
-                "description": bake_required_skills(clean_text, required_skills),
+                "raw_description": text,  # HN comment HTML — stripped by process_jobs_batch
                 "apply_url": f"https://news.ycombinator.com/item?id={comment_id}",
-                "posted_at": thread_date,
-                "work_type": wt,
-                "experience_level": detect_experience(header["title"], clean_text),
-                "required_skills": required_skills,
-            })
+                "posted_at": datetime.fromisoformat(thread_date.replace("Z", "+00:00")) if thread_date else None,
+            }
+            # Preserve provider-parsed work_type (from the HN header format) if present
+            if header.get("work_type"):
+                job["work_type"] = header["work_type"]
+            all_jobs.append(job)
 
             time.sleep(REQUEST_DELAY)
 
@@ -165,7 +166,7 @@ def fetch_hn_jobs(thread_id: int, thread_date: str) -> list[dict]:
     return all_jobs
 
 
-def main():
+def main(mp_executor=None):
     print("Finding latest HN 'Who is hiring?' thread...")
     thread = _find_latest_thread()
     if not thread:
@@ -178,11 +179,19 @@ def main():
     all_jobs = fetch_hn_jobs(thread["id"], thread["created_at"])
     print(f"Total jobs parsed: {len(all_jobs)}")
 
-    all_jobs = filter_tech_jobs(all_jobs)
-    print(f"After tech filter: {len(all_jobs)}")
+    print("Running process_jobs_batch (enrichment + filtering)...")
+    batch_result = process_jobs_batch(all_jobs, mp_executor=mp_executor)
+    accepted_jobs = batch_result["accepted"]
+    tech_filtered = batch_result["tech_filtered"]
+    lang_filtered = batch_result["lang_filtered"]
+    print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
+    print(f"Filtered (Tech): {tech_filtered}")
+    print(f"Filtered (Lang): {lang_filtered}")
 
-    if all_jobs:
-        result = save_jobs(all_jobs, source="hackernews")
+    if accepted_jobs:
+        result = save_jobs(accepted_jobs, source="hackernews")
+        result["tech_filtered"] = tech_filtered
+        result["non_english_skipped"] = lang_filtered
         print(f"Saved to MongoDB: {result}")
     else:
         print("No jobs to save.")

@@ -1,0 +1,175 @@
+# Location canonicalization data consumed by listings/shared/storage.py
+# - country_codes: raw form -> canonical country name
+# - known_cities: city name -> country (for country inference)
+# - states: state/province names to skip during city detection
+# - remote_keywords: raw forms that all normalize to "Remote"
+
+country_codes:
+  in: India
+  ind: India
+  india: India
+  us: United States
+  usa: United States
+  united states: United States
+  uk: United Kingdom
+  gb: United Kingdom
+  united kingdom: United Kingdom
+  canada: Canada
+  au: Australia
+  australia: Australia
+  de: Germany
+  germany: Germany
+  fr: France
+  france: France
+  nl: Netherlands
+  netherlands: Netherlands
+  sg: Singapore
+  singapore: Singapore
+  br: Brazil
+  brazil: Brazil
+  nz: New Zealand
+  new zealand: New Zealand
+  pl: Poland
+  poland: Poland
+  ae: UAE
+  uae: UAE
+  united arab emirates: UAE
+  jp: Japan
+  japan: Japan
+  kr: South Korea
+  south korea: South Korea
+  cn: China
+  china: China
+  ie: Ireland
+  ireland: Ireland
+  il: Israel
+  israel: Israel
+  se: Sweden
+  sweden: Sweden
+  ch: Switzerland
+  switzerland: Switzerland
+  es: Spain
+  spain: Spain
+  it: Italy
+  italy: Italy
+  mx: Mexico
+  mexico: Mexico
+known_cities:
+  mumbai: India
+  delhi: India
+  bengaluru: India
+  bangalore: India
+  hyderabad: India
+  chennai: India
+  kolkata: India
+  pune: India
+  ahmedabad: India
+  jaipur: India
+  lucknow: India
+  kanpur: India
+  nagpur: India
+  indore: India
+  thane: India
+  bhopal: India
+  visakhapatnam: India
+  noida: India
+  gurugram: India
+  gurgaon: India
+  chandigarh: India
+  coimbatore: India
+  kochi: India
+  cochin: India
+  thiruvananthapuram: India
+  trivandrum: India
+  mangalore: India
+  mysore: India
+  mysuru: India
+  vadodara: India
+  surat: India
+  rajkot: India
+  mohali: India
+  goa: India
+  dehradun: India
+  patna: India
+  ranchi: India
+  bhubaneswar: India
+  guwahati: India
+  new york: United States
+  san francisco: United States
+  seattle: United States
+  austin: United States
+  chicago: United States
+  boston: United States
+  los angeles: United States
+  denver: United States
+  atlanta: United States
+  london: United Kingdom
+  berlin: Germany
+  paris: France
+  toronto: Canada
+  vancouver: Canada
+  sydney: Australia
+  melbourne: Australia
+  amsterdam: Netherlands
+  dublin: Ireland
+  singapore: Singapore
+  tokyo: Japan
+states:
+- telangana
+- karnataka
+- maharashtra
+- tamil nadu
+- andhra pradesh
+- west bengal
+- rajasthan
+- gujarat
+- uttar pradesh
+- madhya pradesh
+- kerala
+- haryana
+- bihar
+- odisha
+- jharkhand
+- assam
+- punjab
+- uttarakhand
+- himachal pradesh
+- chhattisgarh
+- california
+- texas
+- new york
+- washington
+- massachusetts
+- illinois
+- colorado
+- georgia
+- florida
+- virginia
+- oregon
+- pennsylvania
+- north carolina
+- ohio
+- michigan
+- minnesota
+- maryland
+- connecticut
+- new jersey
+- arizona
+- england
+- scotland
+- wales
+- ontario
+- british columbia
+- quebec
+- bavaria
+- hesse
+- north rhine-westphalia
+- new south wales
+- victoria
+- queensland
+remote_keywords:
+- anywhere
+- distributed
+- remote
+- wfh
+- work from home

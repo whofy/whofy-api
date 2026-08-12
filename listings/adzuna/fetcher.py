@@ -1,3 +1,4 @@
+from datetime import datetime
 import time
 
 import requests
@@ -147,28 +148,29 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
             location_str = ", ".join(location.get("area", [])) if location.get("area") else "Not specified"
             title = job.get("title", "")
             raw_description = job.get("description", "")
-            description = strip_html(raw_description)
-            detection_text = full_text(raw_description)
-            required_skills = extract_required_skills(title, detection_text)
-
             all_jobs.append({
                 "source": "adzuna",
                 "source_job_id": f"adz_{job.get('id', '')}",
                 "title": title,
                 "company": job.get("company", {}).get("display_name", ""),
                 "location": location_str,
-                "description": bake_required_skills(description, required_skills),
+                "raw_description": raw_description,
                 "apply_url": job.get("redirect_url", ""),
-                "posted_at": job.get("created", ""),
-                "work_type": detect_work_type(title, location_str, detection_text),
-                "experience_level": detect_experience(title, detection_text),
-                "required_skills": required_skills,
+                "posted_at": datetime.fromisoformat(job.get("created").replace("Z", "+00:00")) if job.get("created") else None,
             })
 
     return all_jobs
 
 
-def main():
+def _fetch_wrapper(country, query):
+    try:
+        return fetch_adzuna_jobs(country, query, max_pages=3)
+    except RateLimitExhausted:
+        return None
+
+from listings.shared.pipeline import process_jobs_batch
+
+def main(mp_executor=None):
     if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
         print("ADZUNA_APP_ID and ADZUNA_APP_KEY not set, skipping Adzuna.")
         return
@@ -177,33 +179,59 @@ def main():
     seen_ids = set()
     rate_limited = False
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    tasks = []
     for country in COUNTRIES:
-        if rate_limited or len(all_jobs) >= RAW_JOB_CAP:
-            break
         for query in SEARCH_QUERIES:
-            print(f"Fetching Adzuna jobs ({country.upper()}, '{query}')...")
+            tasks.append((country, query))
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_task = {executor.submit(_fetch_wrapper, c, q): (c, q) for c, q in tasks}
+        
+        for future in as_completed(future_to_task):
+            c, q = future_to_task[future]
             try:
-                jobs = fetch_adzuna_jobs(country, query, max_pages=10)
-            except RateLimitExhausted:
+                jobs = future.result()
+            except Exception as e:
+                print(f"  Error fetching Adzuna jobs ({c.upper()}, '{q}'): {e}")
+                continue
+
+            if jobs is None:
                 print("  Stopping early — saving what we have so far. The 24h scheduler will top up next run.")
-                rate_limited = True
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
+            
+            print(f"Fetched Adzuna jobs ({c.upper()}, '{q}') -> {len(jobs)} jobs")
             for job in jobs:
                 if job["source_job_id"] not in seen_ids:
                     seen_ids.add(job["source_job_id"])
                     all_jobs.append(job)
-            print(f"  -> {len(jobs)} fetched, {len(all_jobs)} unique total")
 
             if len(all_jobs) >= RAW_JOB_CAP:
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
+    import time
+    t_start = time.time()
+    
     print(f"\nTotal unique jobs fetched: {len(all_jobs)}")
 
-    all_jobs = filter_tech_jobs(all_jobs)
-    print(f"After tech filter: {len(all_jobs)}")
+    print("Running process_jobs_batch (enrichment + filtering)...")
+    batch_result = process_jobs_batch(all_jobs, mp_executor=mp_executor)
+    accepted_jobs = batch_result["accepted"]
+    tech_filtered = batch_result["tech_filtered"]
+    lang_filtered = batch_result["lang_filtered"]
+    
+    t_filter = time.time()
+    print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
+    print(f"Filtered (Tech): {tech_filtered}")
+    print(f"Filtered (Lang): {lang_filtered}")
 
-    if all_jobs:
-        result = save_jobs(all_jobs, source="adzuna")
+    if accepted_jobs:
+        result = save_jobs(accepted_jobs, source="adzuna")
+        result["tech_filtered"] = tech_filtered
+        result["non_english_skipped"] = lang_filtered
         print(f"Saved to MongoDB: {result}")
     else:
         print("No jobs to save.")
