@@ -1,0 +1,25 @@
+name: Source Canary
+
+on:
+  schedule:
+    - cron: '0 6 * * 0'   # Every Sunday 06:00 UTC (11:30 AM IST)
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install Dependencies
+        run: uv sync --frozen
+      - name: Probe Sources
+        env:
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
+        run: uv run python -m pipeline.canary
