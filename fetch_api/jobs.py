@@ -1,4 +1,5 @@
 import re
+import time
 from datetime import datetime, timezone, timedelta
 
 from bson import ObjectId
@@ -10,6 +11,24 @@ from db.mongo import get_async_db
 from listings.shared.normalize import strip_html
 
 router = APIRouter()
+
+# Short-TTL in-memory cache for the dropdown endpoints
+# (/api/locations, /api/companies, /api/sources). These run distinct() over
+# ~49k jobs on every call and return data that only changes when ingestion
+# runs (once a day) — a 5-minute stale window is invisible to users.
+_DROPDOWN_CACHE: dict[str, tuple[float, object]] = {}
+_DROPDOWN_TTL_SECONDS = 300
+
+
+def _cache_get(key: str):
+    entry = _DROPDOWN_CACHE.get(key)
+    if entry and entry[0] > time.monotonic():
+        return entry[1]
+    return None
+
+
+def _cache_set(key: str, value) -> None:
+    _DROPDOWN_CACHE[key] = (time.monotonic() + _DROPDOWN_TTL_SECONDS, value)
 
 _TAG_RE = re.compile(r"<[a-zA-Z/][^>]*>")
 
@@ -150,11 +169,13 @@ async def get_matches(
             "limit": limit,
         }
 
-    query = {**base_filter, "$text": {"$search": " ".join(skill_list)}}
-    total = await db.jobs.count_documents(query)
-
-    pipeline = [
-        {"$match": query},
+    # $text is a loose fuzzy match (stemming), so it can surface jobs that
+    # share only a common English word (e.g. "storage", "design"). Require
+    # at least one skill to appear as a real substring in title/description
+    # before returning the job — otherwise a Go-only role can leak into a
+    # React/Python match list because its description says "storage".
+    scored_stage = [
+        {"$match": {**base_filter, "$text": {"$search": " ".join(skill_list)}}},
         {"$addFields": {
             "matched_skills": {
                 "$filter": {
@@ -170,12 +191,24 @@ async def get_matches(
             }
         }},
         {"$addFields": {"match_count": {"$size": "$matched_skills"}}},
-        {"$sort": {"match_count": -1, "last_seen_at": -1, "_id": 1}},
-        {"$skip": skip},
-        {"$limit": limit}
+        {"$match": {"match_count": {"$gte": 1}}},
     ]
 
-    docs = await db.jobs.aggregate(pipeline, allowDiskUse=True).to_list(length=limit)
+    facet_stage = {
+        "$facet": {
+            "docs": [
+                {"$sort": {"match_count": -1, "last_seen_at": -1, "_id": 1}},
+                {"$skip": skip},
+                {"$limit": limit},
+            ],
+            "total": [{"$count": "value"}],
+        }
+    }
+
+    facet = await db.jobs.aggregate(scored_stage + [facet_stage], allowDiskUse=True).to_list(length=1)
+    result = facet[0] if facet else {"docs": [], "total": []}
+    docs = result["docs"]
+    total = result["total"][0]["value"] if result["total"] else 0
 
     return {
         "jobs": [serialize_job(doc, doc.get("matched_skills", [])) for doc in docs],
@@ -190,21 +223,54 @@ async def get_matches(
 async def search_jobs(
     request: Request,
     q: str = Query(..., min_length=2, description="Search query"),
-    limit: int = Query(200, ge=1, le=1000),
+    limit: int = Query(15, ge=1, le=200),
     skip: int = Query(0, ge=0),
+    source: str = Query(None),
+    company: str = Query(None),
+    location: str = Query(None),
+    type: str = Query(None),
+    experience: str = Query(None),
+    posted: str = Query(None),
 ):
     db = get_async_db()
-    
-    # Tokenize the query for strict matching
+    base_filter = _build_filter(source, company, location, type, experience, posted)
+
+    # Tokenize the query for title-anchored matching.
     tokens = re.findall(r"[a-z0-9+#.]+", q.lower())
     if not tokens:
-        docs = await db.jobs.find({"$text": {"$search": q}}).skip(skip).limit(limit).to_list(length=limit)
-        return [serialize_job(doc) for doc in docs]
+        query = {**base_filter, "$text": {"$search": q}}
+        total = await db.jobs.count_documents(query)
+        docs = await db.jobs.find(query).skip(skip).limit(limit).to_list(length=limit)
+        return {
+            "jobs": [serialize_job(doc) for doc in docs],
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+        }
 
-    min_matches = len(tokens) if len(tokens) <= 3 else len(tokens) - 1
+    # Ranking rules:
+    #   - At least one query token must appear in the title OR in the job's
+    #     required_skills list. Description-only hits are noise ("developer"
+    #     mentioned in a Customer Relationship Manager paragraph).
+    #   - For 3+ word queries, require a majority of tokens somewhere in
+    #     title/skills so we don't over-tighten multi-word searches.
+    min_total_matches = 1 if len(tokens) <= 2 else max(2, len(tokens) - 1)
 
-    pipeline = [
-        {"$match": {"$text": {"$search": q}}},
+    # Reusable Mongo expression: does the input token appear (case-insensitive)
+    # as a substring in any element of $required_skills?
+    def _token_in_skills():
+        return {
+            "$anyElementTrue": {
+                "$map": {
+                    "input": {"$ifNull": ["$required_skills", []]},
+                    "as": "sk",
+                    "in": {"$gte": [{"$indexOfCP": [{"$toLower": "$$sk"}, {"$toLower": "$$token"}]}, 0]}
+                }
+            }
+        }
+
+    scored_stage = [
+        {"$match": {**base_filter, "$text": {"$search": q}}},
         {"$addFields": {
             "score": {"$meta": "textScore"},
             "title_hits": {
@@ -216,6 +282,15 @@ async def search_jobs(
                     }
                 }
             },
+            "skill_hits": {
+                "$size": {
+                    "$filter": {
+                        "input": tokens,
+                        "as": "token",
+                        "cond": _token_in_skills()
+                    }
+                }
+            },
             "total_hits": {
                 "$size": {
                     "$filter": {
@@ -224,25 +299,82 @@ async def search_jobs(
                         "cond": {
                             "$or": [
                                 {"$gte": [{"$indexOfCP": [{"$toLower": {"$ifNull": ["$title", ""]}}, {"$toLower": "$$token"}]}, 0]},
-                                {"$gte": [{"$indexOfCP": [{"$toLower": {"$ifNull": ["$description", ""]}}, {"$toLower": "$$token"}]}, 0]}
+                                _token_in_skills(),
                             ]
                         }
                     }
                 }
             }
         }},
-        {"$match": {"total_hits": {"$gte": min_matches}}},
-        {"$sort": {"title_hits": -1, "total_hits": -1, "score": -1, "_id": 1}},
-        {"$skip": skip},
-        {"$limit": limit}
+        # Must match title OR skills (not description). And enough tokens total.
+        {"$match": {"total_hits": {"$gte": min_total_matches}}},
     ]
 
-    docs = await db.jobs.aggregate(pipeline, allowDiskUse=True).to_list(length=limit)
-    if not docs:
-        # Fallback to pure text search if strict matching yielded nothing
-        docs = await db.jobs.find({"$text": {"$search": q}}, {"score": {"$meta": "textScore"}}).sort([("score", {"$meta": "textScore"})]).skip(skip).limit(limit).to_list(length=limit)
-        
-    return [serialize_job(doc) for doc in docs]
+    facet_stage = {
+        "$facet": {
+            "docs": [
+                {"$sort": {"title_hits": -1, "skill_hits": -1, "total_hits": -1, "score": -1, "_id": 1}},
+                {"$skip": skip},
+                {"$limit": limit},
+            ],
+            "total": [{"$count": "value"}],
+        }
+    }
+
+    facet = await db.jobs.aggregate(scored_stage + [facet_stage], allowDiskUse=True).to_list(length=1)
+    result = facet[0] if facet else {"docs": [], "total": []}
+    docs = result["docs"]
+    total = result["total"][0]["value"] if result["total"] else 0
+
+    if not docs and skip == 0:
+        # Fallback: same rule but only require ANY token to hit title or skills
+        # (drops the min_total_matches gate). Description matches still excluded.
+        fb_stage = [
+            {"$match": {**base_filter, "$text": {"$search": q}}},
+            {"$addFields": {
+                "score": {"$meta": "textScore"},
+                "title_hits": {
+                    "$size": {
+                        "$filter": {
+                            "input": tokens,
+                            "as": "token",
+                            "cond": {"$gte": [{"$indexOfCP": [{"$toLower": {"$ifNull": ["$title", ""]}}, {"$toLower": "$$token"}]}, 0]}
+                        }
+                    }
+                },
+                "skill_hits": {
+                    "$size": {
+                        "$filter": {
+                            "input": tokens,
+                            "as": "token",
+                            "cond": _token_in_skills()
+                        }
+                    }
+                },
+            }},
+            {"$match": {"$or": [{"title_hits": {"$gte": 1}}, {"skill_hits": {"$gte": 1}}]}},
+        ]
+        fb_facet = {
+            "$facet": {
+                "docs": [
+                    {"$sort": {"title_hits": -1, "skill_hits": -1, "score": -1, "_id": 1}},
+                    {"$skip": skip},
+                    {"$limit": limit},
+                ],
+                "total": [{"$count": "value"}],
+            }
+        }
+        fb = await db.jobs.aggregate(fb_stage + [fb_facet], allowDiskUse=True).to_list(length=1)
+        fb_result = fb[0] if fb else {"docs": [], "total": []}
+        docs = fb_result["docs"]
+        total = fb_result["total"][0]["value"] if fb_result["total"] else 0
+
+    return {
+        "jobs": [serialize_job(doc) for doc in docs],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+    }
 
 
 _JUNK_LOC_RE = re.compile(
@@ -271,6 +403,10 @@ def _is_valid_location(loc: str) -> bool:
 @router.get("/api/locations")
 @limiter.limit("10/minute")
 async def get_locations(request: Request):
+    cached = _cache_get("locations")
+    if cached is not None:
+        return cached
+
     db = get_async_db()
     raw = [v for v in await db.jobs.distinct("location") if v and v.strip()]
     locations = set()
@@ -282,23 +418,37 @@ async def get_locations(request: Request):
                     locations.add(part)
         elif _is_valid_location(loc):
             locations.add(loc)
-    return sorted(locations)
+    result = sorted(locations)
+    _cache_set("locations", result)
+    return result
 
 
 @router.get("/api/companies")
 @limiter.limit("10/minute")
 async def get_companies(request: Request):
+    cached = _cache_get("companies")
+    if cached is not None:
+        return cached
+
     db = get_async_db()
     values = [v for v in await db.jobs.distinct("company") if v and v.strip()]
-    return sorted(values)
+    result = sorted(values)
+    _cache_set("companies", result)
+    return result
 
 
 @router.get("/api/sources")
 @limiter.limit("10/minute")
 async def get_sources(request: Request):
+    cached = _cache_get("sources")
+    if cached is not None:
+        return cached
+
     db = get_async_db()
     values = [v for v in await db.jobs.distinct("source") if v and v.strip()]
-    return sorted(values)
+    result = sorted(values)
+    _cache_set("sources", result)
+    return result
 
 
 @router.get("/api/jobs/{job_id}")

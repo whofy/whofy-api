@@ -1,7 +1,7 @@
 # Whofy-API — Full Codebase Audit
 
 > **Generated:** 2026-08-10
-> **Last updated:** 2026-08-11 (Phase 0 fixes applied — see §1a Fix Log)
+> **Last updated:** 2026-08-13 (Post-Phase-3 UX pass — search relevance, pagination, dropdown cache, mojibake backfill; see §1d Fix Log)
 > **Scope:** every tracked file under `D:\whofy\whofy-api\` (excluding `.git/`, `.venv/`, `__pycache__/`).
 > **Method:** every file below was read end-to-end. Findings are grounded in the real code as it exists today, not inherited from prior audits. Where prior docs made claims that no longer match reality, this document overrides them.
 > **Companion docs:** `SPEC.md` (history of past fixes), `CODE_REVIEW_ARCHITECTURE_AUDIT.md` (2026-08-08 deep review), `PARSING_AUDIT.md` (parser module — fully applied), `INGESTION_ARCHITECTURE.md` (intended pipeline contract), `AUDIT_DATA_POINTS.md` (schema reference), `groq_api_limits.md` (LLM quotas).
@@ -12,23 +12,28 @@
 
 Whofy-API is a modular FastAPI monolith (~4,500 lines of application code) fronting MongoDB Atlas, with a batch ingestion worker that scrapes ten sources into a single `jobs` collection. It works: `main.py` boots, `/api/health` returns OK, the ingestion GH Action runs daily, and the frontend is served correctly-shaped documents. The parsing module was fully hardened in the last pass (see `PARSING_AUDIT.md`).
 
-**As of the 2026-08-11 fix pass, most of the P0/P1 blockers from the 2026-08-08 architecture review have been remediated** — see **§1a Session Fix Log** below. Data correctness, cost/abuse control, and ingestion observability moved from "high risk" to "good." What's left: JWT `iss`/`aud` validation (deferred pending Clerk dashboard values), cross-source dedup, a test suite, packaging, and the newly-logged company-logo-quality issue (N-17).
+**As of the 2026-08-13 fix pass, Phase 0 blockers are all cleared (except one deferred), Phase 1 test suite is fully built (now 153 passing tests), Phase 2 is 7 of 9 items done, and Phase 3 is complete (6 items shipped, 3 skipped as low-value at current scale).** See **§1a** for the Phase 0 log, **§1b** for the Phase 1 + Phase 2 log, and **§1c** for the Phase 3 log. Data correctness, cost/abuse control, ingestion observability, packaging, config management, cross-source dedup, source rate-limiting, readiness monitoring, schema-drift visibility, weekly source health checks, and YAML-driven company lists are all resolved. What's left: JWT `iss`/`aud` validation (deferred pending Clerk dashboard values), Item 19 (split domain/API DTOs — optional architectural refactor), Redis-backed SlowAPI (unnecessary while running one server), endpoint caching (low benefit at current traffic), and an explain-plan review (premature at 49k docs).
 
-The audit originally surfaced additional issues that prior docs missed (hardcoded absolute paths from another developer's machine, a dead `matching/` directory that `SPEC.md` claims was deleted, a UTF-16 `.vscode/settings.json`, tracked `__pycache__`, a Workday adapter that stored `None` descriptions due to a duplicate dict key, and dead imports across every fetcher). The dict-key bug, the hardcoded paths, and the dead directory are now fixed.
+The audit originally surfaced additional issues that prior docs missed (hardcoded absolute paths from another developer's machine, a dead `matching/` directory, a UTF-16 `.vscode/settings.json`, tracked `__pycache__`, a Workday adapter that stored `None` descriptions due to a duplicate dict key, dead imports across every fetcher, and — discovered via CI failure — a UTF-16-encoded `requirements.txt` in the repo). All of these are now fixed except the tracked `__pycache__` (user opt-out) and the `.vscode/settings.json` encoding (fixed via Item 21).
 
-**Health snapshot (updated 2026-08-11):**
+**Health snapshot (updated 2026-08-13):**
 
-| Area | Before Phase 0 | After Phase 0 | Notes |
-|---|---|---|---|
-| API surface | Working | **Working** | All routes respond; response shapes match what the UI expects |
-| Data correctness | High risk | **Good** | Date bugs fixed (F-01/F-04/F-20); F-05 cross-source dedup still open (documented, non-destructive) |
-| Auth (Clerk) | Incomplete | **Incomplete** | JWT `iss`/`aud` still unchecked — deferred pending Clerk dashboard values from user |
-| Ingestion reliability | High risk | **Good** | Source failures now surface (`SourceRunResult` + `sys.exit(1)`); cleanup skipped on failure; GitHub email notification wired |
-| Cost/abuse control | Weak | **Good** | Chatbot rate-limited, message/history capped, singleton Groq client. Resume upload already hardened. |
-| Test coverage | None | **None** | Still nothing under `tests/` beyond `.gitkeep`. Phase 1 target. |
-| Housekeeping | Poor | **Improved** | Hardcoded paths removed, dead `matching/` deleted. Root `__pycache__/` still tracked (user opt-out); `.vscode/settings.json` encoding still off. |
-| Deployment reproducibility | Weak | **Weak** | Still no lockfile / Dockerfile / `pyproject.toml`. Phase 2 target. |
-| **Company logo UX** | Not flagged | **⚠️ Open (N-17)** | Many companies show a generic globe icon on results page — backend returns Google favicon URL for guessed domains that Google doesn't recognize. Documented for Phase 2. |
+| Area | Before | After Phase 0 | After Phase 1+2 | **After Phase 3 (today)** |
+|---|---|---|---|---|
+| API surface | Working | Working | Working | **Working + `/api/ready` probe live** |
+| Data correctness | High risk | Good | Excellent | **Excellent** — unchanged |
+| Auth (Clerk) | Incomplete | Incomplete | Incomplete | **Incomplete** — JWT `iss`/`aud` still deferred pending Clerk values |
+| Ingestion reliability | High risk | Good | Good | **Excellent** — shared token-bucket rate limiter for Adzuna + Himalayas (F-15), weekly canary probes 6 sources |
+| Cost/abuse control | Weak | Good | Good | **Good** — unchanged |
+| Test coverage | None | None | 124 tests | **✅ 153 tests, 8s runtime** — +29 new tests across rate limiter, `/api/ready`, canary, YAML loader |
+| Housekeeping | Poor | Improved | Clean | **Clean** — plus 342 lines of hardcoded COMPANIES lists moved to YAML |
+| Deployment reproducibility | Weak | Weak | Solid | **Solid** — unchanged |
+| Company logo UX | Globes everywhere | Flagged (N-17) | Fixed | **Fixed** — unchanged |
+| Cross-source dedup | Broken (F-05) | Broken | Working | **Working** — unchanged |
+| Config as data | In Python | In Python | Partial (skills + locations) | **Complete** — companies for Greenhouse/Lever/Ashby/Workday now in `data/companies/*.yml` |
+| Scraper consistency | 4 bypass shared pipeline | Same | All 10 sources uniform | **All 10 sources uniform** — unchanged |
+| Source health visibility | None | Ingestion `[FAIL]` markers | Same + rejection counter | **Full** — F-19 logs rejected payloads to `ingestion_rejections`, weekly canary probes 6 APIs |
+| Readiness monitoring | None (only `/api/health` liveness) | Same | Same | **`/api/ready`** — pings MongoDB + Clerk JWKS, returns 503 with per-check status when any dep is down |
 
 **Top blockers before this is production-viable for real users** (status after 2026-08-11 fix pass):
 
@@ -38,8 +43,10 @@ The audit originally surfaced additional issues that prior docs missed (hardcode
 4. ~~Add unique index on `saved_jobs(user_id, job_id)`; convert to upsert; validate `ObjectId` before use~~ ✅ **DONE** (2026-08-11)
 5. ~~Rate-limit `/api/chat`, cap history length, singleton the Groq client~~ ✅ **DONE** (2026-08-11)
 6. ~~Fix Workday's duplicate `description` key~~ ✅ **DONE** (2026-08-11)
-7. Fix LinkedIn's datetime handling before it is ever re-enabled. ⬜ Still open (LinkedIn remains disabled — non-urgent)
+7. ~~Fix LinkedIn's datetime handling before it is ever re-enabled~~ ✅ **DONE** (2026-08-12, F-13 fixed as part of Item 16 scraper standardization)
 8. ~~Purge the two hardcoded `c:\Users\chara\Desktop\...` paths~~ ✅ **DONE** (2026-08-11)
+
+**Only remaining top blocker:** #3 — JWT `iss` + `aud`. Send the two values from your Clerk dashboard and it's a 5-minute fix.
 
 ---
 
@@ -83,6 +90,158 @@ An interactive fix pass was run through Phase 0. Six of seven blockers cleared; 
 
 - `python ingest_api.py` ran end-to-end in 482.7 seconds. All 6 sources returned `[OK]`. Cleanup ran, deleted 0 jobs (verified via `count_documents` — all jobs have `last_seen_at` within 28 days, i.e., cleanup is working correctly, there just isn't stale data yet). Diagnostic confirmed all 43,385 jobs have `last_seen_at` stored as datetime — no lurking string/date-type mismatch.
 - UI rebuilt from Vite dev server, `/saved-jobs` page renders cleanly with new envelope shape; save/unsave verified working on fresh saves.
+
+---
+
+## 1b. Session Fix Log — 2026-08-12 (Phase 1 + Phase 2)
+
+Second big pass. Full Phase 1 test suite built from scratch. Seven of nine Phase 2 items completed. Live database cleaned (4,138 duplicate rows removed).
+
+### Phase 1 — Testing (COMPLETE) ✅
+
+Built a **13-file, 124-test regression suite** from zero. Full suite runs in ~6 seconds.
+
+| File | Tests | Guards |
+|---|---|---|
+| `test_saved_jobs.py` | 12 | F-06 ObjectId validation, F-07 unique index + atomic upsert, F-08 pagination envelope, N-18 PyObjectId serializer |
+| `test_cleanup.py` | 10 | F-01/F-04/F-20 date semantics (all three bugs from Phase 0) |
+| `test_chatbot.py` | 7 | F-09 rate limit (20/min), message cap (3000 chars), history cap (30 entries), rate-limit isolation per user |
+| `test_storage.py` | 12 | Upsert dedup, `$setOnInsert` semantics, source cap, schema-rejection counting, index creation |
+| `test_runners.py` | 7 | F-03 source failure visibility, skip-cleanup-on-failure, `sys.exit(1)` on failure, `mp_executor` forwarding |
+| `test_tech_filter.py` | 14 | Whitelist/blacklist priority, blacklist beats whitelist, description-head-only matching |
+| `test_language_filter.py` | 6 | English/non-English detection, `lang_checked` flag optimization, empty-text handling |
+| `test_providers.py` | 9 | Per-source parse contracts (Greenhouse, Lever, Ashby, RemoteOK, Adzuna, Himalayas, WWR, HN header) |
+| `test_normalize.py` | 9 | HTML→text summarization, nested entity decoding, malformed markup resilience |
+| `test_location_normalize.py` | 7 | City/country canonicalization, remote-keyword collapsing, multi-location handling |
+| `test_enrich.py` | 18 | Skill extraction (case-insensitive + case-sensitive), work-type/experience detection, MAX_EXTRACTED_SKILLS cap |
+| `test_pipeline.py` | 8 | `process_jobs_batch` orchestration, filter counters, provider-supplied work_type preservation |
+| `test_serialize_logo.py` | 5 | 3-tier logo resolution (direct URL > company_domain > null); guards against globe-icon regression |
+| `test_logos.py` | 7 | *(later deleted in Item 14 — replaced by test_serialize_logo.py after `logos.py` was purged)* |
+
+**Setup files created:** `pytest.ini`, `tests/conftest.py` (shared fixtures for `mock_async_db`, `mock_sync_db`, `client`, `unauth_client`, `mock_auth`, `mock_groq_chat`, `rate_limited_client_fresh`, `make_job`, `seed_job`).
+
+**Deleted:** `test_rate_limit.py`, `test_rate_limit_auth.py`, `listings/adzuna/fetcher_test.py` — all were print-based smoke scripts with no assertions, misleadingly named `test_*`.
+
+**Key infrastructure decisions:**
+- `mongomock-motor` for async DB mocking (`AsyncMongoMockClient` per test)
+- `mongomock` for sync DB (ingestion/storage tests)
+- `app.dependency_overrides` for FastAPI `Depends(get_current_user)` — necessary because `Depends()` captures function refs at router-definition time and can't be reached by module-level monkeypatch
+- Multi-site monkeypatch for `get_async_db` since routers import it by name (creating local bindings)
+- `responses` library for HTTP mocking in provider parse tests
+
+### Phase 2 — Structural Cleanup (7 of 9 done, 1 skipped by user, 1 optional)
+
+| Item | Status | Details |
+|---|---|---|
+| **14 — Logo overhaul (N-17)** | ✅ Done | A-lite implementation: deleted `_guess_domain`, deleted the 5-tier fallback logic in `serialize_job`, added `logo_url` field to Job model, extract `company_logo` from RemoteOK API. Runtime is now 3 lines: cached URL → Google favicon of source-provided domain → null. Deleted entire `listings/shared/logos.py` (~180 lines), deleted `tests/test_logos.py`, dropped the `company_logos` MongoDB collection (3,745 orphan docs). Added `tests/test_serialize_logo.py` (5 tests) to lock in the new behavior. No more globe icons on results page. |
+| **15 — Consolidate runners** | ⏭️ Skipped | User asked to keep `run_api.py` and `run_scrapper.py` as separate files for failure-isolation reasons. Duplication remains (~190 lines shared between the two runners). Non-blocking. |
+| **16 — Standardize scrapers (F-12)** | ✅ Done | All 4 scrapers (Workday, WWR, HN, LinkedIn) now hand off to `process_jobs_batch` like the 6 API sources do. Removed ~150 lines of inline enrichment. Uniform pipeline across all 10 sources. **Bonus: F-13 (LinkedIn datetime bug) fully fixed as part of the refactor** — `_is_within_age` and `_enrich_listings` now accept `datetime \| str \| None`. LinkedIn is safe to re-enable now. |
+| **17 — Extract config to YAML** | ✅ Done | `SKILL_VOCAB` (961 skills) + `_CASE_SENSITIVE_SKILLS` (21 terms) moved to `data/skills.yml`. `COUNTRY_CODE_MAP` (49) + `KNOWN_CITIES` (59) + inline STATES (50) + `REMOTE_KEYWORDS` (5) moved to `data/locations.yml`. `enrich.py` shrank from 17KB → 4KB; `storage.py` shrank by ~100 lines. Adding a new skill or city is now a data-file edit, no code change. |
+| **18 — Single MongoDB module (F-22)** | ✅ Done | Deleted `storage.py`'s duplicate `_client_instance` + `get_client()` (~10 lines). `storage.py` now imports from `db.mongo`. One connection pool to Atlas instead of two. |
+| **19 — Split domain / API DTOs** | ⏭️ Skipped for now | User opted to defer. Architectural refactor to prevent future N-18-class serializer bugs. Current `when_used='json'` hack works, so this is optional polish. |
+| **20 — Packaging with uv** | ✅ Done | Created `pyproject.toml` + `uv.lock` (72 packages pinned with hashes). Deleted `requirements.txt` and `requirements-dev.txt`. Updated `.github/workflows/ingestion.yml` to use `uv sync --frozen`. **Discovered and eliminated** an unrelated bug: the deleted `requirements.txt` was UTF-16 encoded (BOM `FF FE`) which broke pip parsing on GitHub Actions — the reason CI had been failing for 10 days. Now unreachable since pip is no longer invoked. |
+| **21 — Housekeeping bundle** | ✅ Done | Deleted `matching/` directory (only held a stale `.pyc`). Purged hardcoded `c:\Users\chara\Desktop\whofy\whofy-api` paths from `pipeline/audit_indexes.py` and `pipeline/backfill_fingerprints.py`. Removed dead imports from `fetch_api/jobs.py` line 10 (`detect_experience`, `detect_work_type`, `extract_required_skills` — never called). Removed 3 dead functions from `storage.py` (`is_link_alive`, `filter_dead_links`, `normalize_existing_locations`). Removed Greenhouse-only profiling `print()` block from `save_jobs`. Deleted `generate_audit_outputs.py`. Fixed `.vscode/settings.json` UTF-16 → UTF-8. Root `__pycache__/` untrack **skipped per user preference**. |
+| **22 — Cross-source dedup (F-05)** | ✅ Done | Added `canonical_fingerprint: Optional[str]` to Job model. Added `_canonical_fingerprint(company, title, location)` helper in `storage.py` — strips company legal suffixes (Inc/LLC/Corp/PBC), lowercases, alphanumeric-only. Computed on every save. Indexed. New file `pipeline/dedupe_jobs.py` groups by canonical_fingerprint, keeps highest-priority-source copy (Greenhouse > Ashby > Lever > Workday > Himalayas > HN > WWR > RemoteOK > Adzuna > LinkedIn), deletes rest. Added as a step in `.github/workflows/ingestion.yml` — runs after both ingestion stages. **Live run on 2026-08-12 removed 4,138 duplicate rows across 2,430 duplicate groups (7.8% DB reduction: 53,320 → 49,182).** |
+
+### Bonus fixes surfaced during Phase 1/2
+
+| # | What | How discovered |
+|---|---|---|
+| CI-1 | `requirements.txt` was UTF-16-BOM encoded → pip failed to parse `slowapi==0.1.10` with "Invalid requirement" error | User's screenshot of failing GH Actions run (Aug 2 scheduled) revealed the null-byte-per-character pattern. Fixed by Item 20 (deleted the file entirely, moved to `pyproject.toml`). |
+| CI-2 | GitHub Actions workflow "Daily Job Ingestion" is currently DISABLED | User's screenshot of Actions tab. Fix requires manual "Enable workflow" click after pushing updated code. |
+| `pymupdf==1.24.5` broken DLL on Windows Python 3.12 | Encountered during `pip install -r requirements-dev.txt` in Stage 0 test setup | Force-reinstalled 1.28.0. Pinned `1.28.0` in `pyproject.toml`. |
+| `httpx==0.28.1` broke `groq==0.9.0` (`TypeError: AsyncClient.__init__() got unexpected keyword argument 'proxies'`) | Resume upload crashed after test-deps install | Force-reinstalled `httpx==0.27.2`. Pinned in `pyproject.toml`. |
+| HackerNews `_parse_header` regex captures trailing punctuation in URLs (`https://testco.com)` includes the `)`) | Provider parse test | Documented, test adjusted. Minor UX cost; formal fix in Phase 3 backlog. |
+
+### 📝 Post-fix verification (2026-08-12)
+
+- **Full test suite:** 124 passing, 6-second runtime, verified after every Phase 2 item.
+- **Live scraper ingestion (`ingest_scrapper.py`):** ~7 minutes, all 3 sources green, +560 new jobs / +529 updated, dedupe pipeline working (Workday filtered 270 non-English + 821 non-tech via shared pipeline — previously invisible because inline enrichment bypassed those counters).
+- **Live API ingestion (`ingest_api.py`):** ~13 minutes, all 6 sources green, +9,375 new jobs. Himalayas hit expected 429s (F-15 still open), retries recovered most pages. Adzuna handled 503s cleanly.
+- **Live dedupe (`pipeline/dedupe_jobs.py`):** processed all 53,320 jobs, backfilled canonical fingerprints, deleted 4,138 duplicates across 2,430 groups. Runtime ~2 minutes.
+- **UI verified:** unsave button works (previously broken due to N-18); real logos show for Anthropic/MongoDB/etc.; no globe icons on results page.
+- **Uv install:** `uv sync --frozen` produces identical 72-package environment as the local dev machine.
+
+### DB state after Phase 2
+
+- **jobs collection:** 49,182 documents (was 53,320 before dedupe; +9,375 - 4,138 net today)
+- **saved_jobs collection:** small (per-user)
+- **~~company_logos collection:~~ dropped** (3,745 docs removed, no longer needed after logo A-lite)
+
+---
+
+## 1c. Session Fix Log — 2026-08-13 (Phase 3)
+
+Phase 3 (scale readiness) pass. Six items shipped, three explicitly skipped as low-value at current scale. Test suite grew from 124 → **153 passing tests**.
+
+### ✅ Shipped
+
+| # | Fix | Files touched | Why it matters |
+|---|---|---|---|
+| **F-15** | **Token-bucket rate limiter for Adzuna + Himalayas.** New `listings/shared/rate_limiter.py` (~40 lines, no deps) implements a thread-safe `TokenBucket`. All worker threads in a fetcher share one bucket, so 3 threads × 1 req/sec bucket = exactly 1 real req/sec to the API — regardless of thread count. Adzuna set at 0.4 req/sec (matches ~25/min free-tier quota); Himalayas at 1 req/sec. Removed the redundant per-request `time.sleep(REQUEST_DELAY)` from Adzuna. | `listings/shared/rate_limiter.py` (new), `listings/adzuna/fetcher.py`, `listings/himalayas/fetcher.py`, `tests/test_rate_limiter.py` (4 tests) | Fixes the 429s previously observed in production runs. Fewer failed retries → faster ingestion + more complete data + Adzuna daily quota lasts longer. |
+| **F-27** | **`/api/ready` readiness probe.** New endpoint pings MongoDB (`admin.command("ping")`) and Clerk JWKS. Returns 200 with `{"status":"ready","checks":{...}}` when both OK, 503 with per-dependency failure detail when either fails. Rate-limited to 10/min so it can't be spammed. **URL to visit:** `http://localhost:8000/api/ready` locally, or `<your-deployed-url>/api/ready` in production. Response tells you exactly which dependency is down and why — no more guessing when the site misbehaves. | `main.py`, `tests/test_ready.py` (5 tests) | Instant diagnosis of "which dependency is broken?" No third-party monitoring service required; you visit the URL manually when something feels off. Deployment platforms (Render/Railway/Fly.io) can also poll it for auto-restart. |
+| **F-19** | **Schema-rejection payload logging.** New `ingestion_rejections` capped MongoDB collection (5 MB / 500 doc max — auto-drops oldest). Every job that fails `Job.model_validate` now stores its full raw payload, error type, error message, source, and timestamp. Best-effort write wrapped in its own try/except so a logging failure can't break ingestion. Indexed on `rejected_at` + `(source, rejected_at)`. | `listings/shared/storage.py`, `tests/test_storage.py` (+3 tests) | Turns "13 jobs schema_rejected" (opaque counter) into a browsable audit trail in MongoDB Compass. When Greenhouse/Workday/Adzuna silently change their API shape, you can see what they sent and which field broke. |
+| **F-21** | **Cleanup misleading `executor.shutdown(wait=False, cancel_futures=True)` calls in Adzuna + Himalayas.** The pattern was a no-op — the enclosing `with` block always waits for in-flight requests anyway. Option A (delete the misleading calls) chosen over Option B (add threading.Event); behavior identical, code honest. | `listings/adzuna/fetcher.py`, `listings/himalayas/fetcher.py` | Removes code that looked like it did instant cancellation but didn't. Future readers won't waste time debugging phantom behavior. |
+| **Canary** | **Weekly source-health GitHub Action.** New `pipeline/canary.py` probes 6 API sources (Greenhouse, Lever, Ashby, RemoteOK, Himalayas, Adzuna) with the smallest possible calls, asserts HTTP OK + ≥1 job + expected schema field. Retries once with 3s backoff before declaring failure. Exits non-zero on any failure → CI red → GitHub emails the repo owner. Scheduled Sunday 06:00 UTC (11:30 AM IST); also triggerable via "Run workflow" button. Scrapers deliberately excluded (too heavy for a weekly heartbeat). | `pipeline/canary.py` (new), `.github/workflows/canary.yml` (new), `tests/test_canary.py` (8 tests) | Catches silent breakage (source returns 0 jobs, endpoint URL changed, response shape drifted) **weeks before** the daily ingestion accumulates missing data. Fills the one gap F-19 doesn't cover: "source responded normally, just with zero data." |
+| **YAML companies** | **`COMPANIES` lists moved out of Python.** 342 lines of hardcoded Python dicts (Greenhouse: 169 companies, Ashby: 61, Workday: 27, Lever: 10) migrated to `data/companies/*.yml`. New `listings/shared/companies.py` with `lru_cache`-backed `load_companies(source)` loader. Each fetcher's `COMPANIES` block collapsed to a single call. Adding a new company is now a 30-second YAML edit — no Python knowledge, no risk of breaking a dict literal. Completes Item 17's "stretch goal" from Phase 2. | `data/companies/greenhouse.yml`, `lever.yml`, `ashby.yml`, `workday.yml` (new), `listings/shared/companies.py` (new), 4 fetchers modified, `tests/test_companies_loader.py` (9 tests) | Non-developers can add companies. YAML diffs are cleaner in PRs. Config-as-data pattern now covers 100% of ingestion-tunable data (skills + locations + companies). |
+
+### ⏭️ Skipped as low-value (documented reasoning)
+
+| # | Item | Why skipped |
+|---|---|---|
+| F-18 | Redis-backed SlowAPI storage | You currently run 1 uvicorn worker on 1 server, so per-process counters give the correct rate limit. Redis only matters when scaling to multiple workers/replicas — no benefit until then, and adds an external service to manage. Revisit only if scaling horizontally. |
+| F-16 | Short-TTL cache for `/api/locations`, `/api/companies`, `/api/sources` | Would speed `distinct()` calls from ~200ms → ~1ms and reduce MongoDB load, but current traffic is low enough that neither is measurably a problem. Revisit when public traffic ramps up. |
+| MongoDB explain-plan review | Diagnostic-only pass. At 49k jobs, existing indexes almost certainly cover all queries adequately. Value shows up at 200k+ documents — revisit then. |
+
+### 📝 Post-fix verification (2026-08-13)
+
+- **Full test suite:** 153 passing, ~8-second runtime. Run after every Phase 3 change.
+- **F-15 verification:** `test_shared_bucket_across_threads_enforces_global_rate` proves 4 threads sharing a 10/sec bucket take ~2s for 20 calls (not <0.1s), which would be the case without the bucket.
+- **`/api/ready` verification:** 5 tests cover all four states (both-ok, jwks-fail, empty-jwks, mongo-fail, both-fail). The endpoint is safe to hit before deploying anywhere.
+- **YAML migration verification:** counts match originals (Greenhouse: 169, Lever: 10, Ashby: 61, Workday: 27). `test_*_fetcher_uses_yaml_backed_list` tests assert each fetcher's `COMPANIES` is `is`-identical to the loader output.
+
+### Deployment notes
+
+- **`/api/ready`** — no config needed; ships enabled. Deployment platforms can wire it in as their health-check URL.
+- **Canary workflow** — will auto-schedule as soon as it's pushed to `main` and the workflow is enabled in GH Actions. Requires the existing `ADZUNA_APP_ID` / `ADZUNA_APP_KEY` repo secrets (already set for daily ingestion).
+- **Rejections collection** — created automatically by `ensure_indexes()` on next ingestion run. Capped, so it self-maintains.
+- **YAML company lists** — no migration needed. First run picks them up automatically via `lru_cache`; no DB backfill required.
+
+### Files touched (Phase 3 delta)
+
+- **Added:** `listings/shared/rate_limiter.py`, `listings/shared/companies.py`, `pipeline/canary.py`, `.github/workflows/canary.yml`, `data/companies/greenhouse.yml`, `data/companies/lever.yml`, `data/companies/ashby.yml`, `data/companies/workday.yml`, `tests/test_rate_limiter.py`, `tests/test_ready.py`, `tests/test_canary.py`, `tests/test_companies_loader.py`
+- **Edited:** `main.py`, `listings/shared/storage.py`, `listings/adzuna/fetcher.py`, `listings/himalayas/fetcher.py`, `listings/greenhouse/fetcher.py`, `listings/lever/fetcher.py`, `listings/ashby/fetcher.py`, `listings/scraping/workday/fetcher.py`, `tests/test_storage.py`
+
+---
+
+## 1d. Session Fix Log — 2026-08-13 (Post-Phase-3 UX pass)
+
+A follow-up backend pass driven by real user-facing bugs surfaced while using the app. Made `/api/matches` actually filter to relevant jobs, rewrote `/api/search` with title+skills matching + pagination envelope, added a TTL cache for the dropdown endpoints (F-16 unshelved), and fixed a long-standing mojibake bug that had been visible in every job's Required-skills block. Test suite unchanged at **158 passing**.
+
+### ✅ Backend fixes
+
+| # | Fix | Files touched | Why it matters |
+|---|---|---|---|
+| **F-16** (unshelved) | **Dropdown TTL cache.** Added an in-memory 5-min cache (`_DROPDOWN_CACHE` + `_cache_get`/`_cache_set` helpers) for `/api/locations`, `/api/companies`, `/api/sources`. First call hits Mongo (~200ms), subsequent calls return in ~1ms. Cache is per-endpoint (no key collisions), auto-refreshes after TTL, no infra needed. | `fetch_api/jobs.py`, `tests/test_dropdown_cache.py` (5 tests) | User reported visible delay opening the Company filter dropdown. Eliminates the "first click after idle" backend latency; `$distinct` no longer runs on every open. |
+| **New N-21** | **`bake_required_skills` mojibake fix + backfill.** [enrich.py:117](whofy-api/listings/shared/enrich.py:117) contained the literal characters `â€¢` (three Unicode codepoints U+00E2, U+20AC, U+00A2 — what `•` looks like when double-encoded) instead of the actual bullet. Every job saved since inherited it. Fixed the code + wrote `pipeline/fix_mojibake_bullets.py` (idempotent, dry-run by default, `--apply` writes). User ran `--apply` — **29,364 documents corrected** (60% of the DB). | `listings/shared/enrich.py`, `pipeline/fix_mojibake_bullets.py` (new) | Every job description showed `â€¢ Python` instead of `• Python` in the Required skills section. Visible on every page load. Undocumented until now. |
+| **New N-22** | **`/api/matches` match-count filter.** Added `{"$match": {"match_count": {"$gte": 1}}}` to the aggregation. MongoDB `$text` uses stemming and matches loose English words like "storage", "design", "rest", so a Go-only role could leak into a React/Python match list because its description happened to mention "storage". Now every returned job has at least one of the user's actual skills as a substring in title or description. Also switched to `$facet` so `total` is the accurate post-filter count. | `fetch_api/jobs.py` `/api/matches` | User reported unrelated Go/Level-Design jobs appearing when 25 real skills were selected from their parsed resume. |
+| **New N-23** | **`/api/search` rewrite — title+skills matching, pagination envelope, filter passthrough.** Three separate bugs fixed together: (a) default `limit` dropped 200 → **15** to match `PAGE_SIZE`; (b) response shape changed from bare array to `{jobs, total, skip, limit}` envelope like `/api/matches`; (c) matcher now requires query tokens in **title OR `required_skills`** (not description) — kills the "Customer Relationship Manager appears for 'frontend developer' because 'developer' was in a paragraph" class of bug; (d) accepts filter params (`source`, `company`, `location`, `type`, `experience`, `posted`) so filter chips actually apply during search. Fallback path also uses title/skills anchoring. Uses `$facet` for docs + total in one query. | `fetch_api/jobs.py` `/api/search` | Search bar was returning 55k results in one shot, with irrelevant roles at the top, and ignoring active filter chips. |
+
+### 📝 Post-fix verification (2026-08-13, second pass)
+
+- **Full test suite:** 158 passing (unchanged — no test regressions).
+- **Live DB backfill:** `python -m pipeline.fix_mojibake_bullets --apply` reported "Modified 29364 documents." Confirmed `â€¢` is gone from stored descriptions.
+- **`/api/matches` verified end-to-end:** with 25 skills sent, only jobs with `match_count >= 1` returned; `total` reflects the post-filter count via `$facet`.
+- **`/api/search` verified end-to-end:** returns `{jobs, total, skip, limit}` envelope, default `limit=15`, matcher requires title/skills hit, filter params honored.
+
+### Files touched (Post-Phase-3 delta)
+
+- **Added:** `pipeline/fix_mojibake_bullets.py`, `tests/test_dropdown_cache.py`
+- **Edited:** `fetch_api/jobs.py`, `listings/shared/enrich.py`
+
+### Reclassified
+
+- **F-16** — previously listed as "Skipped as low-value (Phase 3)" is now **✅ Done**. The user's real-world experience contradicted the audit's initial "low benefit at current traffic" assessment. Lesson: even at low traffic, first-click latency on `$distinct` endpoints is user-visible.
 
 ---
 
@@ -571,37 +730,37 @@ This is the load-bearing file for the entire ingestion write path. It's also whe
 
 ### 5.3 P0/P1 findings from `CODE_REVIEW_ARCHITECTURE_AUDIT.md` — status
 
-**Updated 2026-08-11:** Phase 0 fix pass cleared most P0/P1 blockers. Remaining items are P1-P3 with lower urgency.
+**Updated 2026-08-12:** Phase 1 built a test suite. Phase 2 closed 5 more findings. Only 5 items remain open (all P1-P3 non-urgent), plus JWT deferred pending user input.
 
 | ID | Sev | Status | Location | Fix summary |
 |---|---|---|---|---|
-| F-01 | P0 | ✅ **DONE 2026-08-11** | `listings/shared/storage.py:434` | Uses datetime cutoff + `last_seen_at`. Cleanup verified working (0 stale rows currently). |
+| F-01 | P0 | ✅ **DONE 2026-08-11** | `listings/shared/storage.py` | Uses datetime cutoff + `last_seen_at`. Guarded by `test_cleanup.py`. |
 | F-02 | P0 | ⏸ **DEFERRED** | `fetch_api/auth.py:54–81` | Pass `issuer=` and `audience=` to `jwt.decode` — needs Clerk dashboard values |
-| F-03 | P0 | ✅ **DONE 2026-08-11** | `listings/run_api.py`, `run_scrapper.py` | Returns `SourceRunResult`, skips cleanup on failure, `sys.exit(1)` → CI red → email |
-| F-04 | P1 | ✅ **DONE 2026-08-11** | `listings/shared/storage.py:221` | `_is_too_old` accepts `str \| datetime \| None` |
-| F-05 | P1 | ⬜ Open | `listings/shared/storage.py:35–37` | Separate `source_key` from `canonical_fingerprint` — needs data model work |
-| F-06 | P1 | ✅ **DONE 2026-08-11** | `fetch_api/saved_jobs.py` | ObjectId validated at top of route; 400 on invalid |
-| F-07 | P1 | ✅ **DONE 2026-08-11** | `fetch_api/saved_jobs.py`, `storage.py` | Unique index `(user_id, job_id)` + atomic upsert with `$setOnInsert` |
-| F-08 | P1 | ✅ **DONE 2026-08-11** | `fetch_api/saved_jobs.py` | `skip`/`limit` pagination + `{jobs,total,skip,limit}` envelope; `str(id)` on expired branch |
-| F-09 | P1 | ✅ **DONE 2026-08-11** | `chatbot/router.py`, `chat_service.py` | 20/min rate limit + 3000-char message cap + 30-entry history cap + singleton Groq client |
+| F-03 | P0 | ✅ **DONE 2026-08-11** | `listings/run_api.py`, `run_scrapper.py` | Returns `SourceRunResult`, skips cleanup on failure, `sys.exit(1)` → CI red → email. Guarded by `test_runners.py`. |
+| F-04 | P1 | ✅ **DONE 2026-08-11** | `listings/shared/storage.py` | `_is_too_old` accepts `str \| datetime \| None`. Guarded by `test_cleanup.py`. |
+| F-05 | P1 | ✅ **DONE 2026-08-12** (Item 22) | `listings/shared/storage.py` + `pipeline/dedupe_jobs.py` | Separated: `_fingerprint` = source key (upsert), `_canonical_fingerprint` = cross-source dedup (company+title+location, normalized). Dedupe script runs daily via GH Actions. **Live cleanup removed 4,138 duplicates** (2,430 groups, 7.8% reduction). |
+| F-06 | P1 | ✅ **DONE 2026-08-11** | `fetch_api/saved_jobs.py` | ObjectId validated at top of route; 400 on invalid. Guarded by `test_saved_jobs.py`. |
+| F-07 | P1 | ✅ **DONE 2026-08-11** | `fetch_api/saved_jobs.py`, `storage.py` | Unique index `(user_id, job_id)` + atomic upsert with `$setOnInsert`. Guarded by `test_saved_jobs.py`. |
+| F-08 | P1 | ✅ **DONE 2026-08-11** | `fetch_api/saved_jobs.py` | `skip`/`limit` pagination + `{jobs,total,skip,limit}` envelope; `str(id)` on expired branch. Guarded by `test_saved_jobs.py`. |
+| F-09 | P1 | ✅ **DONE 2026-08-11** | `chatbot/router.py`, `chat_service.py` | 20/min rate limit + 3000-char message cap + 30-entry history cap + singleton Groq client. Guarded by `test_chatbot.py`. |
 | F-11 | P1 | ✅ Done (prior) | `parsing/resume_parser.py` | Pydantic validation of Groq output |
-| F-12 | P1 | ⬜ Open | `listings/hackernews/`, `scraping/weworkremotely/`, `scraping/workday/`, `scraping/linkedin/` | Move inline enrichment into `process_jobs_batch` |
-| F-13 | P1 | ⬜ Open | `listings/scraping/linkedin/fetcher.py` | Fix datetime handling before re-enable (LinkedIn stays disabled) |
-| F-14 | P1 | ✅ **DONE 2026-08-11** | `listings/scraping/workday/fetcher.py:235` | Removed duplicate `description: None` key |
-| F-15 | P1 | ⬜ Open | `listings/adzuna/fetcher.py` | Global token-bucket limiter (also applies to Himalayas — 429s observed in prod) |
-| F-16 | P1 | ⬜ Open | `fetch_api/jobs.py` | Short-TTL cache for `distinct()` endpoints; reduce max page sizes |
-| F-17 | P2 | ⏸ **DEFERRED** | `fetch_api/auth.py:19–30` | Async HTTP client + TTL cache + refresh lock (part of the JWT block) |
-| F-18 | P2 | ⬜ Open | `fetch_api/limiter.py:20–24` | Redis storage before adding replicas |
-| F-19 | P2 | ⬜ Open | `listings/shared/storage.py:301–333` | `ingestion_rejections` collection for observable schema failures |
-| F-20 | P2 | ✅ **DONE 2026-08-11** | `listings/shared/storage.py:434` | Cleanup now uses `last_seen_at` |
-| F-21 | P2 | ⬜ Open | Adzuna/Himalayas | Bounded producer/consumer; drop `shutdown(wait=False)` inside `with` |
-| F-22 | P2 | ⬜ Open | `db/mongo.py` vs `storage.py` | Single MongoDB access module (still two singletons) |
-| F-23 | P2 | ⬜ Open | `test_rate_limit*.py`, `adzuna/fetcher_test.py`, `tests/` | Real assertion-based tests |
-| F-24 | P2 | ⬜ Open | Root | `pyproject.toml` + lockfile + Dockerfile |
-| F-25 | P3 | ⬜ Open | Both runners | Consolidate into one runner |
-| F-26 | P3 | ⬜ Open | Every fetcher | Move `COMPANIES` to config |
-| F-27 | P3 | ⬜ Open | `main.py:42` | `/api/ready` with Mongo + JWKS checks |
-| F-28 | P3 | ✅ Done | — | This doc supersedes prior stale claims |
+| F-12 | P1 | ✅ **DONE 2026-08-12** (Item 16) | `listings/hackernews/`, `scraping/weworkremotely/`, `scraping/workday/`, `scraping/linkedin/` | All 4 refactored to hand off to `process_jobs_batch`. Inline enrichment removed. Consistent contract across all 10 sources. |
+| F-13 | P1 | ✅ **DONE 2026-08-12** (Item 16 bonus) | `listings/scraping/linkedin/fetcher.py` | `_is_within_age` and `_enrich_listings` now accept datetime OR string. LinkedIn is safe to re-enable. |
+| F-14 | P1 | ✅ **DONE 2026-08-11** | `listings/scraping/workday/fetcher.py` | Removed duplicate `description: None` key. |
+| F-15 | P1 | ✅ **DONE 2026-08-13** (Phase 3) | `listings/adzuna/fetcher.py`, `listings/himalayas/fetcher.py`, `listings/shared/rate_limiter.py` | Shared thread-safe `TokenBucket` across worker threads. Adzuna at 0.4 req/sec, Himalayas at 1 req/sec. Guarded by `test_rate_limiter.py` (4 tests) including the "N threads produce global rate, not N × per-thread rate" invariant. |
+| F-16 | P1 | ✅ **DONE 2026-08-13** (Post-Phase-3, unshelved) | `fetch_api/jobs.py` | 5-min in-memory TTL cache for `/api/locations`, `/api/companies`, `/api/sources`. First call ~200ms, subsequent ~1ms. Guarded by `test_dropdown_cache.py` (5 tests). |
+| F-17 | P2 | ⏸ **DEFERRED** | `fetch_api/auth.py:19–30` | Async HTTP client + TTL cache + refresh lock (part of the JWT block). |
+| F-18 | P2 | ⏭️ Skipped (Phase 3) | `fetch_api/limiter.py:20–24` | Only matters with multiple workers/replicas — no benefit at 1 server. Revisit when scaling horizontally. |
+| F-19 | P2 | ✅ **DONE 2026-08-13** (Phase 3) | `listings/shared/storage.py` | `ingestion_rejections` capped collection (5 MB / 500 doc max) now stores raw payload + error type + error message on every schema rejection. Best-effort write; can't break ingestion. Guarded by 3 new tests in `test_storage.py`. |
+| F-20 | P2 | ✅ **DONE 2026-08-11** | `listings/shared/storage.py` | Cleanup now uses `last_seen_at`. Guarded by `test_cleanup.py`. |
+| F-21 | P2 | ✅ **DONE 2026-08-13** (Phase 3) | `listings/adzuna/fetcher.py`, `listings/himalayas/fetcher.py` | Removed the misleading `executor.shutdown(wait=False, cancel_futures=True)` calls — the enclosing `with` block always drains in-flight requests, so those calls were dead code. Behavior identical, code honest. |
+| F-22 | P2 | ✅ **DONE 2026-08-12** (Item 18) | `listings/shared/storage.py` | Deleted duplicate `_client_instance` + `get_client()`. Now imports from `db.mongo`. One connection pool. |
+| F-23 | P2 | ✅ **DONE 2026-08-12** (Phase 1) | `tests/` | 124 tests across 13 files. Full assertion-based coverage. `test_rate_limit*.py` and `adzuna/fetcher_test.py` deleted (were print-based, not real tests). |
+| F-24 | P2 | ✅ **DONE 2026-08-12** (Item 20) | Root | `pyproject.toml` + `uv.lock` created (72 packages pinned with hashes). Dockerfile deliberately NOT included per user preference. `requirements*.txt` deleted. GH Actions updated to `uv sync --frozen`. |
+| F-25 | P3 | ⏭️ Skipped | Both runners | User kept `run_api.py` and `run_scrapper.py` separate for failure-isolation. Duplication remains but is scoped. |
+| F-26 | P3 | ✅ **DONE 2026-08-13** (Phase 3 completed the stretch goal) | Every fetcher, `enrich.py`, `storage.py`, `data/companies/*.yml` | Skills + locations were done in Item 17 (Phase 2). Phase 3 finished the migration by moving `COMPANIES` lists for Greenhouse (169), Lever (10), Ashby (61), Workday (27) — total 267 entries — from Python code to `data/companies/*.yml` via `listings/shared/companies.py`. Config-as-data is now complete. |
+| F-27 | P3 | ✅ **DONE 2026-08-13** (Phase 3) | `main.py` | `GET /api/ready` pings Mongo + Clerk JWKS, returns 200 or 503 with per-check status. **URL:** `http://localhost:8000/api/ready` locally or `<deployed-url>/api/ready` in prod. Rate-limited 10/min. Guarded by `test_ready.py` (5 tests). |
+| F-28 | P3 | ✅ Done | — | This doc supersedes prior stale claims. |
 
 ### 5.4 New findings surfaced by this audit (not in prior docs)
 
@@ -612,66 +771,102 @@ This is the load-bearing file for the entire ingestion write path. It's also whe
 | N-03 | P3 | ⏭️ Skipped by user | `__pycache__/main.cpython-312.pyc` tracked at repo root | `__pycache__/` |
 | N-04 | P3 | ⬜ Open | `.vscode/settings.json` is UTF-16 encoded with escape junk (PowerShell `Out-File`) | `.vscode/settings.json` |
 | N-05 | P2 | ⬜ Open | Dead imports of `detect_experience`, `detect_work_type`, `extract_required_skills` in `fetch_api/jobs.py:10` — never called | `fetch_api/jobs.py:10` |
-| N-06 | P2 | ⬜ Open | Dead functions `is_link_alive`, `filter_dead_links`, `normalize_existing_locations` in `storage.py` — no callers | `storage.py:40,49,411` |
-| N-07 | P2 | ⬜ Open | Every fetcher imports enrichment helpers at top but those using `process_jobs_batch` never call them | All `listings/*/fetcher.py` |
-| N-08 | P2 | ⬜ Open | `certifi` used by `storage.py:3` + `mongo.py:3` but not in `requirements.txt` (pulled transitively) | `requirements.txt` |
-| N-09 | P2 | ✅ **DONE 2026-08-11** | Chatbot now uses singleton `AsyncGroq` client (matches `parsing/resume_parser.py:111`) | `chatbot/chat_service.py` |
+| N-06 | P2 | ✅ **DONE 2026-08-12** (Item 21) | Dead functions removed from `storage.py` | Deleted |
+| N-07 | P2 | ✅ **DONE 2026-08-12** (Item 16) | Dead imports removed from every fetcher during shared-pipeline migration | All `listings/*/fetcher.py` cleaned |
+| N-08 | P2 | ✅ **DONE 2026-08-12** (Item 20) | `certifi==2026.6.17` added to `pyproject.toml`; deleted `requirements.txt` entirely | `pyproject.toml` |
+| N-09 | P2 | ✅ **DONE 2026-08-11** | Chatbot now uses singleton `AsyncGroq` client | `chatbot/chat_service.py` |
 | N-10 | P2 | ⬜ Open | Chatbot system prompt hardcodes drifting product facts ("20,000+ live job listings", source list) | `chatbot/chat_service.py:26–71` |
-| N-11 | P2 | ⬜ Open | LinkedIn disabled via **comment** in `run_scrapper.py`, not as a source with `enabled=False` state | `listings/run_scrapper.py:82` |
-| N-12 | P2 | ⬜ Open | WWR + Workday store `posted_at` as **strings** while API fetchers store `datetime` — inconsistent typing | Both scraper `fetcher.py` files |
-| N-13 | P3 | ⬜ Open | `_JWKS_CACHE["keys"]` stores the entire JWKS JSON (not just `.keys`) — confusing naming | `fetch_api/auth.py:29` |
-| N-14 | P3 | ⬜ Open | `settings.mongodb_uri` read at import time in `storage.py:15` | `storage.py:15` |
-| N-15 | P3 | ⬜ Open | Greenhouse-only profiling `print()` left in `save_jobs` from a benchmark | `storage.py:343–352` |
-| N-16 | P3 | ⬜ Open | Cleanup runs twice per GH Action run (once after each ingest stage) | `run_api.py`, `run_scrapper.py`, `ingestion.yml` |
-| **N-17** | **P2** | ⬜ **Open (new — logged 2026-08-11)** | **Company logo pipeline shows generic globe icons on results page for many companies.** Backend confidently returns `https://google.com/s2/favicons?domain=<guessed>&sz=128` for jobs whose sources don't supply `company_domain` (Adzuna, RemoteOK). Google's favicon API returns a placeholder globe for unknown domains — the `<img>` "loads successfully" so the frontend `onError` fallback (colored letter) never fires. User sees a generic globe for companies like Trigent Software, DATAECONOMY, Knit Finance, etc. **Two fixes:** (a) short-term — stop returning Google favicon URLs when domain was guessed rather than known; let frontend show the colored-letter fallback. (b) long-term — auto-populate `logos.py` `KNOWN_DOMAINS` from the existing `COMPANIES` domain data already present in Greenhouse/Ashby/Lever/Workday/Himalayas fetchers; consider switching Clearbit → Logo.dev or Brandfetch. | `fetch_api/jobs.py:42–48`, `listings/shared/logos.py`, `listings/adzuna/fetcher.py`, `listings/remoteok/fetcher.py` |
-| **N-18** | **P1** | ✅ **DONE 2026-08-11 (root cause of "unsave broken" symptom)** | **`PyObjectId` serializer converted `ObjectId` → `str` on `model_dump()`**, meaning `SavedJob.model_dump(by_alias=True)` stored `job_id` as a string in MongoDB. All saved-jobs docs had string-typed `job_id`, so DELETE queries (which used `ObjectId`) never matched → 404 on every unsave. Added `when_used='json'` so serialization only fires on JSON output, not on Python dicts destined for Mongo. Migrated by wiping the small saved_jobs collection (2 records). | `models/job.py:15–19` |
+| N-11 | P2 | ⏭️ Skipped (Item 15 skipped) | LinkedIn disabled via **comment** in `run_scrapper.py`. Non-issue after Item 16 fixed F-13 — LinkedIn is now safe to re-enable via one comment change. | `listings/run_scrapper.py:82` |
+| N-12 | P2 | ⬜ Partial | WWR/Workday still may store `posted_at` inconsistently across sources. Item 16 refactor didn't audit each source's exact type, only enrichment flow. Follow-up. | Both scraper `fetcher.py` files |
+| N-13 | P3 | ⬜ Open | `_JWKS_CACHE["keys"]` stores the entire JWKS JSON (not just `.keys`) — confusing naming. Cosmetic. | `fetch_api/auth.py:29` |
+| N-14 | P3 | ⬜ Open | `settings.mongodb_uri` read at import time in `storage.py:15` — replaced with `db.mongo.get_client` via Item 18, but the pattern still exists at some import sites. Cosmetic. | Various |
+| N-15 | P3 | ✅ **DONE 2026-08-12** (Item 21) | Greenhouse-only profiling `print()` removed from `save_jobs` along with all `t_*` timing vars | `storage.py` cleaned |
+| N-16 | P3 | ⚠️ Partial | Cleanup step still runs twice per GH Action (once after ingest_api, once after ingest_scrapper). Now runs THREE times counting Item 22 dedupe. Small waste, not a bug. | `run_api.py`, `run_scrapper.py`, `ingestion.yml` |
+| **N-17** | **P2** | ✅ **DONE 2026-08-12** (Item 14 A-lite) | Removed the guessed-domain Google favicon fallback. New 3-tier logic: source-provided direct URL (RemoteOK) > Google favicon of source-provided domain > null (frontend shows colored letter). Deleted `logos.py` entirely, dropped `company_logos` cache collection. Guarded by `test_serialize_logo.py`. | `fetch_api/jobs.py`, `listings/remoteok/fetcher.py`, `models/job.py` |
+| **N-18** | **P1** | ✅ **DONE 2026-08-11 (root cause of "unsave broken" symptom)** | `PyObjectId` serializer converted `ObjectId` → `str` on `model_dump()`, corrupting Mongo storage of saved_jobs. Added `when_used='json'` so serialization only fires on JSON output. | `models/job.py:15–19` |
+| **N-19** | **P0** | ✅ **DONE 2026-08-12** (Item 20 side-effect) | **`requirements.txt` was UTF-16-BOM encoded** — pip parsed each byte-pair as a broken char, produced `"Invalid requirement: 's\x00l\x00o\x00w\x00a\x00p\x00i...'"` errors on GitHub Actions. **Root cause of GH Actions Daily Job Ingestion being "Disabled" since Aug 2**. Discovered when user shared screenshot of failing scheduled run. Eliminated by Item 20 — pip is no longer invoked; `uv sync --frozen` reads `pyproject.toml` + `uv.lock` (both clean UTF-8). Still requires manual re-enable of the disabled workflow. | Deleted |
+| **N-20** | **P2** | ⬜ Open (logged 2026-08-12) | GitHub Actions "Daily Job Ingestion" workflow is currently **DISABLED** in GH UI. Discovered from user's screenshot showing "Disabled" label next to the workflow. Fix requires user to click "Enable workflow" in GH Actions tab after pushing today's changes. Auto-scheduled runs (5:30 AM IST daily) will not fire until this is re-enabled. | GH Actions UI |
+| **N-21** | **P1** | ✅ **DONE 2026-08-13** | **Mojibake bullet in every job description.** [enrich.py:117](whofy-api/listings/shared/enrich.py:117) contained the literal chars `â€¢` instead of `•`. Every job saved since inherited it — visible to users as `â€¢ Python` in the Required skills block. Fixed the source line + wrote `pipeline/fix_mojibake_bullets.py` (idempotent, dry-run default). User ran `--apply`; **29,364 rows corrected** (60% of DB). New writes are clean automatically. | `listings/shared/enrich.py`, `pipeline/fix_mojibake_bullets.py` |
+| **N-22** | **P1** | ✅ **DONE 2026-08-13** | **`/api/matches` returned unrelated jobs.** MongoDB `$text` stemming matched common English words ("storage", "design", "rest"), letting Go/Level-Design roles leak into React/Python match lists. Added `{"$match": {"match_count": {"$gte": 1}}}` after the substring-scoring stage so every returned job has at least one real skill hit in title/description. Also switched to `$facet` so `total` reflects the post-filter count. | `fetch_api/jobs.py` `/api/matches` |
+| **N-23** | **P1** | ✅ **DONE 2026-08-13** | **`/api/search` rewrite.** Multiple bugs stacked: 200-result page (no pagination), bare-array response (no `total`), matched any body word (returned "Customer Relationship Manager" for "frontend developer"), ignored active filter chips. Rewrote to: default `limit=15`, `{jobs,total,skip,limit}` envelope, requires query tokens in **title OR `required_skills`** (not description), accepts filter params. `$facet` for docs+total in one query. | `fetch_api/jobs.py` `/api/search` |
 
 ---
 
 ## 6. Prioritized Action List
 
-### Phase 0 — Do before next production ingestion (blockers)
+### Phase 0 — Blockers (done, except deferred)
 
-**Status after 2026-08-11 fix pass: 6 of 7 items complete.**
+**Status: 6 of 7 complete, 1 deferred pending external input.**
 
-1. ✅ **DONE** — F-14 Workday duplicate `description` key (line 238 removed)
-2. ✅ **DONE** — F-01 / F-04 / F-20 date semantics in `storage.py` (normalizer, datetime cutoff, `last_seen_at`)
-3. ✅ **DONE** — F-03 swallowed source failures (`SourceRunResult`, skip cleanup on fail, `sys.exit(1)`)
-4. ⏸ **DEFERRED** — F-02 JWT `iss`/`aud` + F-17 async JWKS. Waiting on Clerk dashboard values from user. 5-minute fix once values are known.
-5. ✅ **DONE** — F-06 / F-07 / F-08 saved-jobs (ObjectId validation, unique index, atomic upsert, pagination envelope, str-serialized IDs, plus N-18 serializer fix and UI wire-up)
-6. ✅ **DONE** — F-09 chatbot (20/min rate limit, 3000-char message cap, 30-entry history cap, singleton Groq client via N-09)
-7. ✅ **DONE (partial)** — N-01 hardcoded paths purged, N-02 `matching/` deleted. N-03 (untrack `__pycache__/`) explicitly skipped by user, N-04 (`.vscode/settings.json` encoding) left open.
+1. ✅ **DONE 2026-08-11** — F-14 Workday duplicate `description` key
+2. ✅ **DONE 2026-08-11** — F-01 / F-04 / F-20 date semantics in `storage.py`
+3. ✅ **DONE 2026-08-11** — F-03 swallowed source failures
+4. ⏸ **DEFERRED** — **F-02 JWT `iss`/`aud`** + F-17 async JWKS. **HIGHEST-PRIORITY REMAINING ITEM.** Needs Clerk dashboard values from user. 5-minute fix.
+5. ✅ **DONE 2026-08-11** — F-06 / F-07 / F-08 saved-jobs (validation, unique index, atomic upsert, pagination envelope) + N-18 serializer fix + UI wire-up
+6. ✅ **DONE 2026-08-11** — F-09 chatbot hardening
+7. ✅ **DONE 2026-08-11+12** — N-01, N-02, N-04, N-15 done. N-03 (untrack `__pycache__/`) skipped per user preference.
 
-### Phase 1 — Make behavior testable
+### Phase 1 — Testing (COMPLETE ✅)
 
-8. Delete `test_rate_limit.py`, `test_rate_limit_auth.py`, `adzuna/fetcher_test.py`, `generate_audit_outputs.py`. Replace with mock-based tests under `tests/unit/`, `tests/contract/`, `tests/integration/`.
-9. Add provider parser fixtures (one representative payload per source) so schema regressions surface in CI.
-10. Add JWT tests once F-02 lands: wrong issuer, wrong audience, expired, unknown kid, missing sub, key rotation.
-11. Add saved-jobs tests: invalid ID, duplicate write, pagination, expired snapshot, upsert-race safety (should pass after F-07 fix).
-12. Add cleanup tests: native datetime, missing date, active-but-old, failed-source-run gating (should pass after F-01/F-03 fixes).
-13. Add chatbot tests: request oversize rejection, history cap rejection, per-user rate-limit isolation.
+**Status: fully complete. 13 files, 124 tests, 6-second runtime, all green.**
 
-### Phase 2 — Structural cleanup
+- `tests/conftest.py` — 9 shared fixtures (mock DBs, auth, HTTP client, factories)
+- `pytest.ini` — configured for pytest-asyncio, pythonpath, custom markers
+- **Tier 1** (protect Phase 0 fixes): `test_saved_jobs.py` (12), `test_cleanup.py` (10), `test_chatbot.py` (7)
+- **Tier 2** (ingestion safety): `test_storage.py` (12), `test_runners.py` (7), `test_tech_filter.py` (14), `test_language_filter.py` (6)
+- **Tier 3** (contract regression): `test_providers.py` (9), `test_normalize.py` (9), `test_location_normalize.py` (7), `test_enrich.py` (18), `test_pipeline.py` (8)
+- **Tier 4** (nice-to-haves): `test_serialize_logo.py` (5)
+- **Not written** (blocked): `test_auth.py` — waiting on F-02 (JWT) to land
 
-14. **Company logo pipeline overhaul (N-17)** — stop returning Google favicon URLs for guessed domains; auto-populate `logos.py` `KNOWN_DOMAINS` from the fetcher `COMPANIES` lists; evaluate swapping Clearbit for Logo.dev or Brandfetch.
-15. Consolidate `run_api.py` + `run_scrapper.py` into one runner driven by a source registry. Represent LinkedIn as `enabled=False` (N-11) not a comment.
-16. Move Workday/WWR/HN/LinkedIn to fetch-only adapters that hand off to `process_jobs_batch` (F-12).
-17. Extract enrichment vocabulary + tech filter regex to data files; extract company lists (Greenhouse/Lever/Ashby/Workday/Adzuna) to a `sources.yml` (F-26).
-18. Split `db/mongo.py` and `storage.py` to share one MongoDB access module (F-22). One `_client_instance`, one pool policy, one shutdown owner.
-19. Break `models/job.py` into `domain/` (persistence) and `api/dto/` (responses). Stop importing enrichment from API layer (N-05).
-20. Add `pyproject.toml` + lockfile + Dockerfile (F-24).
-21. Add `.dockerignore`, add `certifi` to requirements (N-08), delete tracked `__pycache__/` (N-03), fix `.vscode/settings.json` encoding (N-04).
-22. Cross-source dedup (F-05) — separate `source_key` from `canonical_fingerprint`; log candidates before making it a delete rule.
+### Phase 2 — Structural cleanup (mostly done)
 
-### Phase 3 — Scale readiness
+**Status: 7 of 9 complete, 1 skipped by user (Item 15), 1 optional deferred (Item 19).**
 
-23. Redis-backed SlowAPI storage before running >1 uvicorn worker or >1 replica (F-18).
-24. Short-TTL cache for `/api/locations`, `/api/companies`, `/api/sources` (F-16).
-25. Reduce max page sizes; add MongoDB explain-plan review under realistic data volume.
-26. Move ingestion to a separate worker process (already effectively is — just make it a proper service).
-27. Global token-bucket rate limiter for Adzuna and Himalayas (F-15, F-21) — 429s observed in production Himalayas run 2026-08-11.
-28. `ingestion_rejections` collection for schema-rejected job payloads (F-19).
-29. `/api/ready` endpoint distinct from `/api/health` — pings Mongo and JWKS (F-27).
+- ✅ **Item 14** — Logo overhaul (A-lite): globe icons gone, RemoteOK direct logos, 3-tier resolution
+- ⏭️ **Item 15** — Consolidate runners: **skipped** per user (keep runners as separate files for failure isolation)
+- ✅ **Item 16** — Standardize scrapers: all 10 sources use `process_jobs_batch`, F-13 LinkedIn bug fixed
+- ✅ **Item 17** — Extract config to YAML: `data/skills.yml`, `data/locations.yml`
+- ✅ **Item 18** — Single MongoDB module: one client, one pool, imports from `db.mongo`
+- ⏭️ **Item 19** — Split domain/API DTOs: **deferred** (optional architectural refactor; N-18-class bugs currently patched with `when_used='json'` hack)
+- ✅ **Item 20** — Modern packaging: `pyproject.toml` + `uv.lock`, deleted `requirements*.txt`, updated CI to `uv sync`
+- ✅ **Item 21** — Housekeeping bundle: dead code, hardcoded paths, dead directory, encoding fix
+- ✅ **Item 22** — Cross-source dedup: `canonical_fingerprint` + daily cleanup script; live cleanup removed 4,138 duplicates
+
+### Phase 3 — Scale readiness (COMPLETE ✅)
+
+**Status: 6 of 9 items shipped, 3 explicitly skipped as low-value at current scale.** See **§1c** for the detailed fix log.
+
+**Shipped:**
+
+- ✅ **F-15** — Shared thread-safe token-bucket rate limiter for Adzuna (0.4 req/sec) + Himalayas (1 req/sec). Kills the 429s.
+- ✅ **F-19** — `ingestion_rejections` capped collection (5 MB / 500 doc max) captures raw payload + error on every schema failure.
+- ✅ **F-21** — Removed misleading `executor.shutdown(wait=False, cancel_futures=True)` calls from Adzuna/Himalayas; the enclosing `with` block always drained anyway.
+- ✅ **F-27** — `GET /api/ready` pings MongoDB + Clerk JWKS. **URL:** `http://localhost:8000/api/ready` locally or `<deployed-url>/api/ready` in prod. 200 when both OK, 503 with per-check status when either fails.
+- ✅ **Weekly canary** — `.github/workflows/canary.yml` + `pipeline/canary.py` probe 6 API sources every Sunday 06:00 UTC. Red CI + email on failure.
+- ✅ **YAML companies** — Greenhouse (169), Lever (10), Ashby (61), Workday (27) migrated to `data/companies/*.yml` via `listings/shared/companies.py`.
+
+**Skipped:**
+
+- ⏭️ **F-18** — Redis-backed SlowAPI. Only matters with >1 worker/replica; you run 1 server. Revisit when scaling.
+- ⏭️ **F-16** — Endpoint caching for `distinct()` queries. Low benefit at current traffic; revisit when public traffic ramps.
+- ⏭️ **MongoDB explain-plan review** — Diagnostic-only. Existing indexes are almost certainly fine at 49k docs. Revisit at 200k+.
+
+**Not attempted:**
+
+- Move ingestion to a separate worker service (already effectively is — just not formalized). Non-issue.
+
+### Immediate actions the user needs to take (2026-08-12)
+
+**Before daily automation resumes:**
+
+1. `git push` all today's changes to `main` (packaging, YAML config, dedupe, all fixes). Without this, GH Actions cron will still fail on the old UTF-16 `requirements.txt` (N-19).
+2. Manually **click "Enable workflow"** in GitHub Actions → Daily Job Ingestion. Currently disabled (N-20). Cron won't fire until re-enabled.
+3. Manually trigger one run to verify the new `uv sync` setup works in CI (~20 min). Expected outcome: green ✅.
+4. From that point on: daily runs at 5:30 AM IST resume automatically, dedupe runs after each ingestion.
+
+**Then whenever ready:**
+
+5. Get Clerk `iss` + `aud` values → send to session → 5-minute F-02 fix + add `test_auth.py` (Tier 4 completion).
 
 ---
 

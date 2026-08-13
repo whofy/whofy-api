@@ -114,5 +114,5 @@ def extract_required_skills(title: str, description: str) -> list[str]:
 def bake_required_skills(description: str, required_skills: list[str]) -> str:
     if not required_skills:
         return description
-    block = "Required skills:\n" + "\n".join(f"â€¢ {s}" for s in required_skills)
+    block = "Required skills:\n" + "\n".join(f"• {s}" for s in required_skills)
     return f"{description}\n\n{block}" if description else block

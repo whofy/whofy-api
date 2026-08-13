@@ -8,18 +8,8 @@ from listings.shared.tech_filter import filter_tech_jobs
 
 LEVER_API = "https://api.lever.co/v0/postings/{company}?mode=json"
 
-COMPANIES = [
-    {"name": "Gopuff", "slug": "gopuff", "domain": "gopuff.com"},
-    {"name": "Palantir", "slug": "palantir", "domain": "palantir.com"},
-    {"name": "Spotify", "slug": "spotify", "domain": "spotify.com"},
-    {"name": "LogRocket", "slug": "logrocket", "domain": "logrocket.com"},
-    {"name": "Tinybird", "slug": "tinybird", "domain": "tinybird.co"},
-    {"name": "Outreach", "slug": "outreach", "domain": "outreach.io"},
-    {"name": "Cloudinary", "slug": "cloudinary", "domain": "cloudinary.com"},
-    {"name": "Toptal", "slug": "toptal", "domain": "toptal.com"},
-    {"name": "JumpCloud", "slug": "jumpcloud", "domain": "jumpcloud.com"},
-    {"name": "StackBlitz", "slug": "stackblitz", "domain": "stackblitz.com"},
-]
+from listings.shared.companies import load_companies
+COMPANIES = load_companies("lever")
 
 HEADERS = {
     "User-Agent": "Whofy Job Aggregator (contact: whofyteam@gmail.com)"

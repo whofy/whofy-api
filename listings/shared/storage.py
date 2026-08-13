@@ -14,9 +14,33 @@ from db.mongo import get_client
 
 DB_NAME = "whofy"
 JOBS_COLLECTION = "jobs"
+REJECTIONS_COLLECTION = "ingestion_rejections"
 DEFAULT_SOURCE_CAP = 20000
 EXPIRY_DAYS = 28
 MAX_AGE_DAYS = 28
+
+# Capped collection: auto-drops oldest docs when full. Sized to hold roughly
+# the last 500 rejections. Debugging tool only — safe to lose old rows.
+_REJECTIONS_CAP_BYTES = 5 * 1024 * 1024  # 5 MB
+_REJECTIONS_CAP_DOCS = 500
+
+
+def _log_rejection(db, source: str, job: dict, error: Exception) -> None:
+    """Persist a schema-rejected payload so we can inspect it later. Writes
+    are best-effort — a logging failure must never break ingestion."""
+    try:
+        db[REJECTIONS_COLLECTION].insert_one({
+            "source": source,
+            "source_job_id": job.get("source_job_id"),
+            "title": job.get("title"),
+            "company": job.get("company"),
+            "error_type": type(error).__name__,
+            "error_message": str(error)[:2000],
+            "raw_payload": job,
+            "rejected_at": datetime.now(timezone.utc),
+        })
+    except Exception as log_err:
+        print(f"[{source}] failed to log rejection: {log_err}")
 
 
 def _fingerprint(source: str, source_job_id: str) -> str:
@@ -234,8 +258,9 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
 
         try:
             validated_job = Job.model_validate(job).model_dump(by_alias=True)
-        except Exception:
+        except Exception as e:
             schema_rejected += 1
+            _log_rejection(db, source, job, e)
             continue
 
         added_at_val = validated_job.pop("added_at", now)
@@ -353,6 +378,20 @@ def ensure_indexes():
     saved_jobs_col = db["saved_jobs"]
     saved_jobs_col.create_index([("user_id", 1), ("job_id", 1)], unique=True)
     saved_jobs_col.create_index([("user_id", 1), ("saved_at", -1)])
+
+    # Capped rejections collection — first run creates it, later runs are no-ops.
+    if REJECTIONS_COLLECTION not in db.list_collection_names():
+        try:
+            db.create_collection(
+                REJECTIONS_COLLECTION,
+                capped=True,
+                size=_REJECTIONS_CAP_BYTES,
+                max=_REJECTIONS_CAP_DOCS,
+            )
+        except Exception as e:
+            print(f"Could not create capped {REJECTIONS_COLLECTION}: {e}")
+    db[REJECTIONS_COLLECTION].create_index([("rejected_at", -1)])
+    db[REJECTIONS_COLLECTION].create_index([("source", 1), ("rejected_at", -1)])
 
     print("Indexes ensured.")
 

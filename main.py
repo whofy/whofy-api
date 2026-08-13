@@ -1,7 +1,9 @@
+import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from config.settings import settings
 
@@ -42,3 +44,33 @@ app.add_middleware(
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/ready")
+@limiter.limit("10/minute")
+async def ready(request: Request):
+    """Readiness probe: pings each critical dependency and reports which
+    ones are reachable. Returns 200 when all dependencies are up, 503 when
+    any check fails so uptime tooling and deployment platforms can react."""
+    checks: dict[str, str] = {}
+
+    try:
+        from db.mongo import get_async_client
+        await get_async_client().admin.command("ping")
+        checks["mongodb"] = "ok"
+    except Exception as e:
+        checks["mongodb"] = f"fail: {type(e).__name__}: {e}"
+
+    try:
+        from fetch_api.auth import _fetch_jwks
+        jwks = await asyncio.to_thread(_fetch_jwks)
+        if not jwks.get("keys"):
+            checks["clerk_jwks"] = "fail: empty keys list"
+        else:
+            checks["clerk_jwks"] = "ok"
+    except Exception as e:
+        checks["clerk_jwks"] = f"fail: {type(e).__name__}: {e}"
+
+    all_ok = all(v == "ok" for v in checks.values())
+    body = {"status": "ready" if all_ok else "not_ready", "checks": checks}
+    return JSONResponse(status_code=200 if all_ok else 503, content=body)
