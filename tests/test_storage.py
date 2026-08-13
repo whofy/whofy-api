@@ -135,6 +135,39 @@ def test_save_jobs_counts_schema_rejected(mock_sync_db):
     assert mock_sync_db.jobs.count_documents({}) == 0
 
 
+def test_save_jobs_logs_rejection_payload(mock_sync_db):
+    """
+    F-19 full: rejected jobs get written to ingestion_rejections with the
+    raw payload, error type, and error message so failures are debuggable.
+    """
+    invalid = _job_dict(source_job_id="reject_xyz")
+    del invalid["title"]
+    save_jobs([invalid], source="test_src")
+
+    rejections = list(mock_sync_db.ingestion_rejections.find({}))
+    assert len(rejections) == 1
+    r = rejections[0]
+    assert r["source"] == "test_src"
+    assert r["source_job_id"] == "reject_xyz"
+    assert r["company"] == "TestCo"
+    assert r["error_type"] == "ValidationError"
+    assert "title" in r["error_message"].lower()
+    assert r["raw_payload"]["source_job_id"] == "reject_xyz"
+    assert "rejected_at" in r
+
+
+def test_save_jobs_no_rejection_written_when_all_valid(mock_sync_db):
+    """Happy path: no rejections collection writes when every job validates."""
+    save_jobs([_job_dict()], source="test_src")
+    assert mock_sync_db.ingestion_rejections.count_documents({}) == 0
+
+
+def test_ensure_indexes_creates_rejections_collection(mock_sync_db):
+    """The capped rejections collection should exist after ensure_indexes runs."""
+    ensure_indexes()
+    assert "ingestion_rejections" in mock_sync_db.list_collection_names()
+
+
 def test_save_jobs_caps_at_source_cap(mock_sync_db):
     """When jobs > cap, batch is truncated to cap (keeping newest by posted_at)."""
     now = datetime.now(timezone.utc)

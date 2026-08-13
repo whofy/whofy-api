@@ -4,6 +4,7 @@ import time
 import requests
 from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
 from listings.shared.normalize import full_text, strip_html
+from listings.shared.rate_limiter import TokenBucket
 from listings.shared.storage import save_jobs
 from listings.shared.tech_filter import filter_tech_jobs
 from config.settings import settings
@@ -12,10 +13,12 @@ ADZUNA_APP_ID = settings.adzuna_app_id
 ADZUNA_APP_KEY = settings.adzuna_app_key
 ADZUNA_API = "https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
 
-# Throttle to respect Adzuna's ~25 calls/minute free-tier limit.
-REQUEST_DELAY = 1.0
+# Adzuna free tier is ~25 calls/minute = ~0.42/sec. Shared across all worker
+# threads so the actual global rate matches the quota, regardless of how many
+# threads are running.
 MAX_RETRIES = 3
 RAW_JOB_CAP = 12000
+_BUCKET = TokenBucket(rate=0.4)
 
 # Signals the daily quota is exhausted so main() can stop early instead of
 # grinding through every remaining query with failed calls.
@@ -109,6 +112,7 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
         resp = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
+                _BUCKET.acquire()
                 resp = requests.get(url, params=params, headers=HEADERS, timeout=30)
             except requests.RequestException as e:
                 print(f"  Error fetching Adzuna ({country}) page {page}: {e}")
@@ -121,7 +125,7 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
                 if attempt == MAX_RETRIES:
                     print(f"  Adzuna ({country}) page {page} still failing (HTTP {resp.status_code}) after {MAX_RETRIES} retries — quota/throttle likely exhausted.")
                     raise RateLimitExhausted()
-                backoff = REQUEST_DELAY * (2 ** attempt)
+                backoff = 2 ** attempt
                 print(f"  HTTP {resp.status_code} ({country}, page {page}), retry {attempt}/{MAX_RETRIES} in {backoff:.0f}s...")
                 time.sleep(backoff)
                 continue
@@ -135,8 +139,6 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
         if resp.status_code != 200:
             print(f"  Error fetching Adzuna ({country}) page {page}: HTTP {resp.status_code}")
             break
-
-        time.sleep(REQUEST_DELAY)
 
         data = resp.json()
         results = data.get("results", [])
@@ -199,9 +201,8 @@ def main(mp_executor=None):
 
             if jobs is None:
                 print("  Stopping early — saving what we have so far. The 24h scheduler will top up next run.")
-                executor.shutdown(wait=False, cancel_futures=True)
                 break
-            
+
             print(f"Fetched Adzuna jobs ({c.upper()}, '{q}') -> {len(jobs)} jobs")
             for job in jobs:
                 if job["source_job_id"] not in seen_ids:
@@ -209,7 +210,6 @@ def main(mp_executor=None):
                     all_jobs.append(job)
 
             if len(all_jobs) >= RAW_JOB_CAP:
-                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
     import time

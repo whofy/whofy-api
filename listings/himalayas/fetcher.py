@@ -6,6 +6,7 @@ from listings.shared.enrich import (
     bake_required_skills, detect_experience, detect_work_type, extract_required_skills,
 )
 from listings.shared.normalize import full_text, strip_html
+from listings.shared.rate_limiter import TokenBucket
 from listings.shared.storage import save_jobs
 from listings.shared.tech_filter import filter_tech_jobs
 
@@ -14,6 +15,11 @@ PAGE_SIZE = 100
 MAX_AGE_DAYS = 30
 PAGE_DELAY = 1
 MAX_RETRIES = 3
+
+# Shared across all worker threads: real global 1 req/sec cap, regardless
+# of how many threads are running. Prevents the 429s previously seen in
+# production runs.
+_BUCKET = TokenBucket(rate=1.0)
 
 HEADERS = {
     "User-Agent": "Whofy Job Aggregator (contact: whofyteam@gmail.com)"
@@ -27,6 +33,7 @@ def _cutoff_ts() -> int:
 def _fetch_page(offset: int) -> dict:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
+            _BUCKET.acquire()
             resp = requests.get(
                 API_URL,
                 params={"limit": PAGE_SIZE, "offset": offset},
@@ -128,8 +135,9 @@ def fetch_himalayas_jobs() -> list[dict]:
                 print(f"  ... fetched ~{len(all_jobs)} jobs so far")
 
             if hit_old:
-                # Can't cleanly cancel all futures, but we stop processing results
-                executor.shutdown(wait=False, cancel_futures=True)
+                # Stop consuming results; the `with` block drains in-flight
+                # requests on exit — a few extra pages is not worth the
+                # threading complexity to interrupt them.
                 break
 
     return all_jobs
