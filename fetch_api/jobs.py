@@ -214,8 +214,11 @@ def _build_filter(
 # Server-side sort resolver. Named modes match SortControl.jsx values.
 # `_id` is always appended as a stable tiebreaker so pagination doesn't
 # duplicate or skip rows when two jobs share a sort key.
-_NEWEST_SORT  = [("posted_at", -1), ("_id", 1)]
-_COMPANY_SORT = [("company",    1), ("_id", 1)]
+_NEWEST_SORT  = [("posted_at",    -1), ("_id", 1)]
+# Sort on `company_sort` — a normalized key set at ingest that strips leading
+# punctuation. Prevents "*Strello Health" / ". Crane" rows from hijacking the
+# top of the A-Z list ahead of real "A..." companies.
+_COMPANY_SORT = [("company_sort",  1), ("_id", 1)]
 
 
 def _resolve_find_sort(sort: str | None, has_skills: bool) -> list[tuple[str, int]]:
@@ -233,7 +236,7 @@ def _resolve_agg_sort(sort: str | None, default: dict) -> dict:
     endpoint's own ranking (match_count for /matches, title/skill hits for
     /search). Overridden only for explicit newest / company requests."""
     if sort == "company":
-        return {"company": 1, "_id": 1}
+        return {"company_sort": 1, "_id": 1}
     if sort == "newest":
         return {"posted_at": -1, "_id": 1}
     return default
