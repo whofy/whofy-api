@@ -29,61 +29,20 @@ COUNTRIES = ["in", "us", "gb", "ca", "au", "de", "fr", "nl", "br", "sg", "nz", "
 
 SEARCH_QUERIES = [
     "software engineer",
-    "software developer",
     "frontend developer",
     "backend developer",
     "fullstack developer",
     "data engineer",
     "data scientist",
-    "devops engineer",
-    "cloud engineer",
     "machine learning engineer",
-    "QA engineer",
+    "devops engineer",
     "mobile developer",
-    "UI UX designer",
-    "product manager",
-    "cybersecurity analyst",
-    "systems engineer",
-    "web developer",
-    "python developer",
-    "java developer",
-    "react developer",
-    "golang developer",
-    "rust developer",
-    "iOS developer",
-    "android developer",
-    "site reliability engineer",
-    "data analyst",
-    "database administrator",
-    "network engineer",
-    "blockchain developer",
-    "AI engineer",
-    "MLOps engineer",
-    "platform engineer",
-    "cloud architect",
-    "solutions architect",
-    "infrastructure engineer",
     "security engineer",
-    "embedded engineer",
-    "firmware engineer",
-    "technical lead",
+    "site reliability engineer",
+    "product manager",
+    "UI UX designer",
     "engineering manager",
-    "scrum master",
-    "technical program manager",
-    "data architect",
-    "ETL developer",
-    "automation engineer",
-    "DevSecOps",
-    "Kubernetes engineer",
-    "AWS engineer",
-    "Azure engineer",
-    "SAP consultant",
-    "Salesforce developer",
-    "ServiceNow developer",
-    "ERP developer",
-    "business intelligence",
-    "power BI developer",
-    "tableau developer",
+    "QA engineer",
 ]
 
 HEADERS = {
@@ -166,7 +125,7 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
 
 def _fetch_wrapper(country, query):
     try:
-        return fetch_adzuna_jobs(country, query, max_pages=3)
+        return fetch_adzuna_jobs(country, query, max_pages=1)
     except RateLimitExhausted:
         return None
 
