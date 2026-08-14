@@ -85,6 +85,37 @@ STRIP_PATTERNS = [
 ]
 
 
+_TOKEN_SPLIT_RE = re.compile(r"[;,]\s*")
+
+
+def _tokenize_location(location: str) -> list[str]:
+    """Split a normalized location string into a searchable token array.
+
+    Powers indexed filtering on /api/matches (see fetch_api/jobs.py). Each
+    piece separated by comma or semicolon becomes one lowercase token:
+
+        "Bengaluru, India"                       → ["bengaluru", "india"]
+        "Berlin, Germany; London, United Kingdom" → ["berlin", "germany",
+                                                    "london", "united kingdom"]
+        "Remote"                                  → ["remote"]
+
+    Querying with $all against this array is an indexed lookup — far faster
+    than the previous case-insensitive regex over the raw `location` field,
+    and correct for compound picks like "Bengaluru, India" (which requires
+    both tokens present) as well as broad picks like just "India".
+    """
+    if not location:
+        return []
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for part in _TOKEN_SPLIT_RE.split(location):
+        part = part.strip().lower()
+        if part and part not in seen:
+            seen.add(part)
+            tokens.append(part)
+    return tokens
+
+
 def _normalize_location(raw: str) -> str:
     if not raw or not raw.strip():
         return ""
@@ -208,6 +239,9 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         raw_loc = job.get("location", "")
         if raw_loc:
             job["location"] = _normalize_location(raw_loc)
+        # Precomputed at ingest so the API can filter by exact indexed
+        # tokens instead of a case-insensitive regex on 65k+ rows.
+        job["location_tokens"] = _tokenize_location(job.get("location", ""))
 
     for job in jobs:
         job["fingerprint"] = _fingerprint(source, job.get("source_job_id", ""))
@@ -240,7 +274,13 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         )
         existing = {doc["fingerprint"] for doc in cursor}
 
-    now = datetime.now(timezone.utc).isoformat()
+    # Real datetime — NOT `.isoformat()`. Pymongo serializes datetime → BSON
+    # Date; a string would land as BSON String. cleanup_expired_jobs then
+    # does {"last_seen_at": {"$lt": <datetime>}}, and in BSON sort order
+    # every String is less than every Date — so a single stray string field
+    # would make the cleanup match every job in the collection. See
+    # test_datetime_types.py for the guard test that pins this invariant.
+    now = datetime.now(timezone.utc)
     skipped = 0
 
     from models.job import Job
@@ -373,6 +413,16 @@ def ensure_indexes():
     collection.create_index([("title", "text"), ("description", "text")])
     collection.create_index([("work_type", 1)])
     collection.create_index([("experience_level", 1)])
+    # Location and source filters used to COLLSCAN the whole jobs collection
+    # on every hit — location auto-applies from the user's resume, so it's on
+    # the hot path for nearly every session. Multikey index on the token
+    # array powers indexed $all lookups (see _tokenize_location).
+    collection.create_index([("location_tokens", 1)])
+    collection.create_index([("source", 1)])
+    # Supports the server-side "Company (A–Z)" sort on /api/matches and
+    # /api/search. Without this, sorting by company COLLSCANs the whole
+    # jobs collection on every page click.
+    collection.create_index([("company", 1), ("_id", 1)])
     collection.create_index("canonical_fingerprint")  # for cross-source dedup grouping
 
     saved_jobs_col = db["saved_jobs"]
