@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 
 from listings.scraping.weworkremotely.fetcher import main as wwr_main
 from listings.scraping.workday.fetcher import main as workday_main
-from listings.scraping.linkedin.fetcher import main as linkedin_main
 from listings.hackernews.fetcher import main as hackernews_main
 from listings.shared.storage import cleanup_expired_jobs, cleanup_non_english_jobs, ensure_indexes, get_collection_stats
 
@@ -82,8 +81,6 @@ def run_ingestion():
     sources = [
         ("Workday", workday_main, True),
         ("We Work Remotely", wwr_main, False),
-        # LinkedIn temporarily disabled — takes 20+ minutes and was never brought into the shared MP pipeline optimization; needs proper diagnosis before re-enabling.
-        # ("LinkedIn", linkedin_main, False),
         ("Hacker News", hackernews_main, False),
     ]
 

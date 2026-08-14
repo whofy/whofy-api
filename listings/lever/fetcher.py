@@ -1,10 +1,8 @@
 from datetime import datetime
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
 from listings.shared.normalize import extract_bullets, first_paragraph
 from listings.shared.storage import save_jobs
-from listings.shared.tech_filter import filter_tech_jobs
 
 LEVER_API = "https://api.lever.co/v0/postings/{company}?mode=json"
 

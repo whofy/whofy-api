@@ -47,7 +47,6 @@ SOURCE_PRIORITY = {
     "weworkremotely": 7,
     "remoteok":   8,
     "adzuna":     9,
-    "linkedin":   10,
 }
 
 _UNKNOWN_SOURCE_PRIORITY = 99

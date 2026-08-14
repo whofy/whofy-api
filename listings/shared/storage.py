@@ -86,6 +86,36 @@ STRIP_PATTERNS = [
 
 
 _TOKEN_SPLIT_RE = re.compile(r"[;,]\s*")
+_COMPANY_SORT_LEADING_RE = re.compile(r"^[^0-9A-Za-z]+")
+
+
+def _normalize_company_sort(company: str) -> str:
+    """Sort key for the "Company (A-Z)" order.
+
+    Users expect A-Z to mean letters first, alphabetically, case-insensitive.
+    Raw ASCII sort gets three things wrong:
+
+      1. Leading punctuation ("*Strello Health") lands before real names
+         because "*" (0x2A) < letters.
+      2. Uppercase and lowercase sort into separate blocks ("Zoom" before
+         "apple" because "Z" (0x5A) < "a" (0x61)).
+      3. Digit-starting names ("037 PitchBook", "1-800-flowers") land ahead
+         of "A..." because digits (0x30-0x39) < letters.
+
+    Fixes:
+      - Strip leading non-alphanumerics.
+      - Lowercase so case doesn't fragment the alphabet.
+      - Prefix digit-starting names with "~" (0x7E, after all lowercase
+         letters) so they sort at the end instead of the top.
+    """
+    if not isinstance(company, str):
+        return ""
+    stripped = _COMPANY_SORT_LEADING_RE.sub("", company).strip().lower()
+    if not stripped:
+        return company.strip().lower()
+    if stripped[0].isdigit():
+        return "~" + stripped
+    return stripped
 
 
 def _tokenize_location(location: str) -> list[str]:
@@ -242,6 +272,15 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         # Precomputed at ingest so the API can filter by exact indexed
         # tokens instead of a case-insensitive regex on 65k+ rows.
         job["location_tokens"] = _tokenize_location(job.get("location", ""))
+        # Trim company — leading/trailing whitespace corrupts "Company A-Z"
+        # sort because " Foo" (0x20) sorts before "*Foo" (0x2A) etc.
+        raw_company = job.get("company")
+        if isinstance(raw_company, str):
+            job["company"] = raw_company.strip()
+        # Sort key that strips leading punctuation so "*Strello Health" lands
+        # under "S" and ". Crane Worldwide Logistics ." lands under "C".
+        # Display still uses the untouched `company`.
+        job["company_sort"] = _normalize_company_sort(job.get("company", ""))
 
     for job in jobs:
         job["fingerprint"] = _fingerprint(source, job.get("source_job_id", ""))
@@ -423,6 +462,7 @@ def ensure_indexes():
     # /api/search. Without this, sorting by company COLLSCANs the whole
     # jobs collection on every page click.
     collection.create_index([("company", 1), ("_id", 1)])
+    collection.create_index([("company_sort", 1), ("_id", 1)])
     collection.create_index("canonical_fingerprint")  # for cross-source dedup grouping
 
     saved_jobs_col = db["saved_jobs"]

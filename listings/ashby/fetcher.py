@@ -1,10 +1,7 @@
 from datetime import datetime
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
-from listings.shared.normalize import full_text, strip_html
 from listings.shared.storage import save_jobs
-from listings.shared.tech_filter import filter_tech_jobs
 
 ASHBY_API = "https://api.ashbyhq.com/posting-api/job-board/{company}"
 

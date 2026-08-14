@@ -64,6 +64,9 @@ class Job(BaseModel):
     # ["bengaluru", "india"]). Powers the indexed location filter in
     # fetch_api/jobs.py — see listings/shared/storage.py::_tokenize_location.
     location_tokens: List[str] = Field(default_factory=list)
+    # Sort key for "Company (A-Z)". Leading punctuation stripped so
+    # "*Strello Health" sorts under "S". Display always uses `company`.
+    company_sort: Optional[str] = None
 
     @field_validator("company_domain", "description", "logo_url", mode="before")
     @classmethod
