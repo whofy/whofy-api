@@ -109,15 +109,20 @@ def fetch_himalayas_jobs() -> list[dict]:
     if first_hit_old or total <= PAGE_SIZE:
         return all_jobs
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor
 
     offsets = list(range(PAGE_SIZE, total, PAGE_SIZE))
-    
+
     with ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_offset = {executor.submit(_fetch_page, offset): offset for offset in offsets}
-        
-        for future in as_completed(future_to_offset):
-            offset = future_to_offset[future]
+        futures = [executor.submit(_fetch_page, offset) for offset in offsets]
+
+        # Consume in ascending-offset order, NOT completion order. The API
+        # returns newest-first, so "this page holds a job older than the
+        # cutoff" only means "stop" once every earlier page has been read.
+        # With as_completed(), a high-offset page can finish first and end
+        # the loop while recent low-offset pages are still in flight —
+        # silently dropping them, differently on every run.
+        for offset, future in zip(offsets, futures):
             try:
                 data = future.result()
             except requests.RequestException as e:
@@ -135,9 +140,10 @@ def fetch_himalayas_jobs() -> list[dict]:
                 print(f"  ... fetched ~{len(all_jobs)} jobs so far")
 
             if hit_old:
-                # Stop consuming results; the `with` block drains in-flight
-                # requests on exit — a few extra pages is not worth the
-                # threading complexity to interrupt them.
+                # Every remaining offset is older than the cutoff. Cancel the
+                # queued pages — letting the `with` block drain them was
+                # fetching the whole catalogue on every run.
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
     return all_jobs

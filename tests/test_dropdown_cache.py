@@ -38,20 +38,6 @@ async def _seed_job(db, company="Acme", location="Bengaluru, India", source="src
 
 
 @pytest.mark.asyncio
-async def test_companies_second_call_returns_cached_stale_data(client, mock_async_db):
-    await _seed_job(mock_async_db, company="Acme")
-    r1 = client.get("/api/companies").json()
-    assert r1 == ["Acme"]
-
-    # Insert a new company after the cache is warmed.
-    await _seed_job(mock_async_db, company="Newco", source="src2")
-
-    # Same call within TTL — must still return the OLD list (cached).
-    r2 = client.get("/api/companies").json()
-    assert r2 == ["Acme"], f"expected stale ['Acme'], got {r2} — cache miss"
-
-
-@pytest.mark.asyncio
 async def test_locations_second_call_returns_cached(client, mock_async_db):
     await _seed_job(mock_async_db, location="Bengaluru, India")
     r1 = client.get("/api/locations").json()
@@ -78,14 +64,14 @@ async def test_cache_expires_after_ttl_and_returns_fresh_data(client, mock_async
     from fetch_api import jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "_DROPDOWN_TTL_SECONDS", 0)
 
-    await _seed_job(mock_async_db, company="Acme")
-    client.get("/api/companies")
+    await _seed_job(mock_async_db, source="greenhouse")
+    client.get("/api/sources")
 
-    await _seed_job(mock_async_db, company="Newco", source="s2")
+    await _seed_job(mock_async_db, source="lever")
     time.sleep(0.01)
 
-    r2 = client.get("/api/companies").json()
-    assert "Newco" in r2, f"TTL=0 should force refetch, got {r2}"
+    r2 = client.get("/api/sources").json()
+    assert "lever" in r2, f"TTL=0 should force refetch, got {r2}"
 
 
 @pytest.mark.asyncio
@@ -93,9 +79,8 @@ async def test_endpoints_have_isolated_cache_slots(client, mock_async_db):
     """Calling one endpoint must not populate another's slot."""
     from fetch_api import jobs as jobs_mod
 
-    await _seed_job(mock_async_db, company="Acme")
-    client.get("/api/companies")
+    await _seed_job(mock_async_db, source="greenhouse")
+    client.get("/api/sources")
 
-    assert "companies" in jobs_mod._DROPDOWN_CACHE
+    assert "sources" in jobs_mod._DROPDOWN_CACHE
     assert "locations" not in jobs_mod._DROPDOWN_CACHE
-    assert "sources" not in jobs_mod._DROPDOWN_CACHE

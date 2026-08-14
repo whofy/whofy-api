@@ -13,7 +13,7 @@ from listings.shared.normalize import strip_html
 router = APIRouter()
 
 # Short-TTL in-memory cache for the dropdown endpoints
-# (/api/locations, /api/companies, /api/sources). These run distinct() over
+# (/api/locations, /api/sources). These run distinct() over
 # ~49k jobs on every call and return data that only changes when ingestion
 # runs (once a day) — a 5-minute stale window is invisible to users.
 _DROPDOWN_CACHE: dict[str, tuple[float, object]] = {}
@@ -104,28 +104,30 @@ def _posted_cutoff(posted: str):
 
 def _build_filter(
     source: str | None,
-    company: str | None,
     location: str | None,
     work_type: str | None = None,
     experience: str | None = None,
     posted: str | None = None,
 ) -> dict:
     filt = {}
+    # Any clause needing its own $or is collected here and emitted as a single
+    # $and. Assigning filt["$or"] directly means the second such clause
+    # silently overwrites the first — both location and posted need one.
+    and_clauses: list[dict] = []
+
     if source:
         vals = _split_param(source)
         if vals:
             filt["source"] = {"$in": vals} if len(vals) > 1 else vals[0]
-    if company:
-        vals = _split_param(company)
-        if vals:
-            filt["company"] = {"$in": vals} if len(vals) > 1 else vals[0]
     if location:
         vals = _split_param(location, sep=r"\|")
         if vals:
             if len(vals) == 1:
                 filt["location"] = {"$regex": re.escape(vals[0]), "$options": "i"}
             else:
-                filt["$or"] = [{"location": {"$regex": re.escape(v), "$options": "i"}} for v in vals]
+                and_clauses.append({
+                    "$or": [{"location": {"$regex": re.escape(v), "$options": "i"}} for v in vals]
+                })
     if work_type:
         vals = _split_param(work_type)
         if vals:
@@ -137,7 +139,21 @@ def _build_filter(
     if posted:
         cutoff = _posted_cutoff(posted)
         if cutoff:
-            filt["posted_at"] = {"$gte": cutoff}
+            # Lever doesn't expose a post date, so its jobs store posted_at as
+            # None — and {"$gte": cutoff} never matches null. Filtering on
+            # posted_at alone made every Lever job disappear the moment a user
+            # picked any Posted option. For undated jobs we fall back to
+            # added_at (when we first ingested it), which is a fair proxy for
+            # "new" and is indexed.
+            and_clauses.append({
+                "$or": [
+                    {"posted_at": {"$gte": cutoff}},
+                    {"posted_at": None, "added_at": {"$gte": cutoff}},
+                ]
+            })
+
+    if and_clauses:
+        filt["$and"] = and_clauses
     return filt
 
 
@@ -149,7 +165,6 @@ async def get_matches(
     skip: int = Query(0, ge=0),
     skills: str = Query(None, description="Comma-separated skills to rank matches by"),
     source: str = Query(None),
-    company: str = Query(None),
     location: str = Query(None),
     type: str = Query(None, description="Comma-separated work types (Remote/Hybrid/On-site)"),
     experience: str = Query(None, description="Comma-separated experience levels"),
@@ -157,7 +172,7 @@ async def get_matches(
 ):
     db = get_async_db()
     skill_list = [s.strip() for s in skills.split(",") if s.strip()] if skills else []
-    base_filter = _build_filter(source, company, location, type, experience, posted)
+    base_filter = _build_filter(source, location, type, experience, posted)
 
     if not skill_list:
         total = await db.jobs.count_documents(base_filter)
@@ -226,14 +241,13 @@ async def search_jobs(
     limit: int = Query(15, ge=1, le=200),
     skip: int = Query(0, ge=0),
     source: str = Query(None),
-    company: str = Query(None),
     location: str = Query(None),
     type: str = Query(None),
     experience: str = Query(None),
     posted: str = Query(None),
 ):
     db = get_async_db()
-    base_filter = _build_filter(source, company, location, type, experience, posted)
+    base_filter = _build_filter(source, location, type, experience, posted)
 
     # Tokenize the query for title-anchored matching.
     tokens = re.findall(r"[a-z0-9+#.]+", q.lower())
@@ -420,20 +434,6 @@ async def get_locations(request: Request):
             locations.add(loc)
     result = sorted(locations)
     _cache_set("locations", result)
-    return result
-
-
-@router.get("/api/companies")
-@limiter.limit("10/minute")
-async def get_companies(request: Request):
-    cached = _cache_get("companies")
-    if cached is not None:
-        return cached
-
-    db = get_async_db()
-    values = [v for v in await db.jobs.distinct("company") if v and v.strip()]
-    result = sorted(values)
-    _cache_set("companies", result)
     return result
 
 
