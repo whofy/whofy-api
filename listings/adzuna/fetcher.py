@@ -160,6 +160,11 @@ def main(mp_executor=None):
 
             if jobs is None:
                 print("  Stopping early — saving what we have so far. The 24h scheduler will top up next run.")
+                # Drop the queued (country, query) tasks. Without this, the
+                # `with` block's shutdown(wait=True) still runs every one of
+                # them — each burning 2s+4s+8s of retry backoff against a
+                # quota we already know is dead.
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
             print(f"Fetched Adzuna jobs ({c.upper()}, '{q}') -> {len(jobs)} jobs")
@@ -169,6 +174,7 @@ def main(mp_executor=None):
                     all_jobs.append(job)
 
             if len(all_jobs) >= RAW_JOB_CAP:
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
     import time
