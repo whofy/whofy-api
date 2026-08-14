@@ -1,17 +1,28 @@
 """Tests for _build_filter — the translation layer from UI filter params to
 a MongoDB query document.
 
-Guards two bugs fixed on 2026-08-14:
+Guards a few historical bugs:
   - `posted` used to filter on `posted_at` alone, which never matches null.
     Lever publishes no post date, so every Lever job vanished the moment a
     user picked any Posted option.
   - `$or` was written directly onto the filter dict, so a second clause
     needing `$or` would silently overwrite the first. Location and posted
     both need one.
+  - `location` used a case-insensitive regex on an unindexed 65k-doc
+    collection. It now uses indexed $all lookups against `location_tokens`
+    with a fallback for pre-backfill docs.
 """
 from datetime import datetime
 
 from fetch_api.jobs import _build_filter
+
+
+def _location_tokens_used(branch):
+    """Extract the primary $all token list from a location branch."""
+    for clause in branch.get("$or", []):
+        if "location_tokens" in clause and "$all" in clause["location_tokens"]:
+            return clause["location_tokens"]["$all"]
+    return None
 
 
 def test_empty_params_produce_empty_filter():
@@ -23,20 +34,36 @@ def test_single_source_is_scalar_multi_is_in():
     assert _build_filter("lever|ashby", None)["source"] == {"$in": ["lever", "ashby"]}
 
 
-def test_single_location_uses_regex_without_and():
+def test_single_location_tokenizes_and_uses_all_on_indexed_field():
     filt = _build_filter(None, "Bengaluru, India")
-    assert filt["location"] == {"$regex": "Bengaluru,\\ India", "$options": "i"}
-    assert "$and" not in filt
+    branch = filt["$and"][0]
+    tokens = _location_tokens_used(branch)
+    assert tokens == ["bengaluru", "india"], "compound location must produce both tokens"
+
+
+def test_single_location_keeps_legacy_regex_fallback_for_pre_backfill_docs():
+    """Backfill script populates location_tokens on old docs. Until that
+    runs, the fallback branch keeps results correct — just slower for
+    those specific docs. Once backfill is done the fallback is dead code."""
+    filt = _build_filter(None, "Bengaluru, India")
+    branches = filt["$and"][0]["$or"]
+
+    fallback = next(b for b in branches if "location" in b)
+    assert fallback["location_tokens"] == {"$exists": False}
+    assert "$regex" in fallback["location"]
 
 
 def test_location_splits_on_pipe_only_so_city_commas_survive():
     """"Bengaluru, India" must stay one value — splitting on comma would
     produce two broken fragments that match nothing."""
     filt = _build_filter(None, "Bengaluru, India|Remote")
-    clauses = filt["$and"][0]["$or"]
-    assert len(clauses) == 2
-    assert "Bengaluru" in clauses[0]["location"]["$regex"]
-    assert "India" in clauses[0]["location"]["$regex"]
+    # Two selections → wrapped in $or.
+    outer = filt["$and"][0]["$or"]
+    assert len(outer) == 2
+
+    token_sets = [_location_tokens_used(b) for b in outer]
+    assert ["bengaluru", "india"] in token_sets
+    assert ["remote"] in token_sets
 
 
 def test_work_type_and_experience_map_to_their_mongo_fields():
@@ -73,9 +100,20 @@ def test_multi_location_and_posted_coexist():
     assert "$or" not in filt, "clauses must be nested under $and, not top-level $or"
     assert len(filt["$and"]) == 2, "location and posted must BOTH survive"
 
-    keys_per_clause = [set(k for b in c["$or"] for k in b) for c in filt["$and"]]
-    assert {"location"} in keys_per_clause
-    assert any("posted_at" in keys for keys in keys_per_clause)
+    # One clause holds the two-branch location $or (each branch itself an
+    # $or of fast/fallback), the other holds the posted-date $or. Walk the
+    # tree looking for either shape.
+    def _any_key_in(node, key):
+        if isinstance(node, dict):
+            if key in node:
+                return True
+            return any(_any_key_in(v, key) for v in node.values())
+        if isinstance(node, list):
+            return any(_any_key_in(v, key) for v in node)
+        return False
+
+    assert _any_key_in(filt["$and"], "location_tokens"), "location branch missing"
+    assert _any_key_in(filt["$and"], "posted_at"), "posted branch missing"
 
 
 def test_all_filters_together():

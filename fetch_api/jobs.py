@@ -94,6 +94,58 @@ def _split_param(val: str, sep: str = r"[,|]") -> list[str]:
     return [s.strip() for s in re.split(sep, val) if s.strip()]
 
 
+_TOKEN_SPLIT_RE = re.compile(r"[;,]\s*")
+
+
+def _tokenize_query_location(raw: str) -> list[str]:
+    """Same tokenization storage.py uses at ingest time — kept in sync so
+    the user's picked value ("Bengaluru, India") produces the exact tokens
+    stored on each job ("bengaluru", "india")."""
+    seen: set[str] = set()
+    tokens: list[str] = []
+    for part in _TOKEN_SPLIT_RE.split(raw):
+        part = part.strip().lower()
+        if part and part not in seen:
+            seen.add(part)
+            tokens.append(part)
+    return tokens
+
+
+def _location_branch(raw: str) -> dict:
+    """Build the Mongo query fragment for one location selection.
+
+    Fast path: match indexed `location_tokens` with $all — every token the
+    user picked must appear on the job.
+
+    Legacy fallback: pre-2026-08-14 docs have no `location_tokens` field.
+    They still match if their raw `location` contains the selection as a
+    substring (case-insensitive). This branch dies naturally as ingestion
+    cycles those docs through re-save (or run pipeline/backfill_location_tokens.py
+    to accelerate). Once every doc has tokens the fallback is dead code
+    and safe to remove.
+    """
+    tokens = _tokenize_query_location(raw)
+    if not tokens:
+        return {}
+    return {
+        "$or": [
+            {"location_tokens": {"$all": tokens}},
+            {
+                "location_tokens": {"$exists": False},
+                "location": {"$regex": re.escape(raw), "$options": "i"},
+            },
+        ]
+    }
+
+
+def _merge_location_branch(filt: dict, and_clauses: list, branch: dict) -> None:
+    """A location branch is already `{$or: [...]}`. Append it to the
+    top-level $and container we're building so it composes cleanly with
+    the posted-date $or (see the `posted` handler below)."""
+    if branch:
+        and_clauses.append(branch)
+
+
 def _posted_cutoff(posted: str):
     mapping = {"today": 1, "week": 7, "month": 30}
     days = mapping.get(posted)
@@ -122,12 +174,14 @@ def _build_filter(
     if location:
         vals = _split_param(location, sep=r"\|")
         if vals:
-            if len(vals) == 1:
-                filt["location"] = {"$regex": re.escape(vals[0]), "$options": "i"}
+            branches = [_location_branch(v) for v in vals]
+            if len(branches) == 1:
+                # A single selection may itself have multiple compound tokens
+                # (e.g. "Bengaluru, India" → both must match). That $and lives
+                # inside branches[0]; merge into the top-level and_clauses.
+                _merge_location_branch(filt, and_clauses, branches[0])
             else:
-                and_clauses.append({
-                    "$or": [{"location": {"$regex": re.escape(v), "$options": "i"}} for v in vals]
-                })
+                and_clauses.append({"$or": branches})
     if work_type:
         vals = _split_param(work_type)
         if vals:
@@ -157,6 +211,34 @@ def _build_filter(
     return filt
 
 
+# Server-side sort resolver. Named modes match SortControl.jsx values.
+# `_id` is always appended as a stable tiebreaker so pagination doesn't
+# duplicate or skip rows when two jobs share a sort key.
+_NEWEST_SORT  = [("posted_at", -1), ("_id", 1)]
+_COMPANY_SORT = [("company",    1), ("_id", 1)]
+
+
+def _resolve_find_sort(sort: str | None, has_skills: bool) -> list[tuple[str, int]]:
+    """Sort for `.find()` — the no-skills branch of /api/matches, and the
+    tokenless branch of /api/search."""
+    if sort == "company":
+        return _COMPANY_SORT
+    # "relevance" is meaningless without a ranking signal — fall through
+    # to newest so the URL still yields a sensible order.
+    return _NEWEST_SORT
+
+
+def _resolve_agg_sort(sort: str | None, default: dict) -> dict:
+    """Sort stage for aggregation `$facet` branches. `default` is the
+    endpoint's own ranking (match_count for /matches, title/skill hits for
+    /search). Overridden only for explicit newest / company requests."""
+    if sort == "company":
+        return {"company": 1, "_id": 1}
+    if sort == "newest":
+        return {"posted_at": -1, "_id": 1}
+    return default
+
+
 @router.get("/api/matches")
 @limiter.limit("30/minute")
 async def get_matches(
@@ -169,6 +251,7 @@ async def get_matches(
     type: str = Query(None, description="Comma-separated work types (Remote/Hybrid/On-site)"),
     experience: str = Query(None, description="Comma-separated experience levels"),
     posted: str = Query(None, description="Date range: today, week, or month"),
+    sort: str = Query(None, description="relevance (default with skills), newest, or company"),
 ):
     db = get_async_db()
     skill_list = [s.strip() for s in skills.split(",") if s.strip()] if skills else []
@@ -176,7 +259,10 @@ async def get_matches(
 
     if not skill_list:
         total = await db.jobs.count_documents(base_filter)
-        docs = await db.jobs.find(base_filter).sort([("posted_at", -1), ("_id", 1)]).skip(skip).to_list(length=limit)
+        # `.limit(limit)` is required — `to_list(length=…)` is only a batch
+        # size hint in Motor, not a cursor cap, so without .limit() page 2
+        # (skip=15) silently returns every remaining row instead of 15.
+        docs = await db.jobs.find(base_filter).sort(_resolve_find_sort(sort, has_skills=False)).skip(skip).limit(limit).to_list(length=limit)
         return {
             "jobs": [serialize_job(doc) for doc in docs],
             "total": total,
@@ -212,7 +298,7 @@ async def get_matches(
     facet_stage = {
         "$facet": {
             "docs": [
-                {"$sort": {"match_count": -1, "last_seen_at": -1, "_id": 1}},
+                {"$sort": _resolve_agg_sort(sort, {"match_count": -1, "last_seen_at": -1, "_id": 1})},
                 {"$skip": skip},
                 {"$limit": limit},
             ],
@@ -245,6 +331,7 @@ async def search_jobs(
     type: str = Query(None),
     experience: str = Query(None),
     posted: str = Query(None),
+    sort: str = Query(None, description="relevance (default), newest, or company"),
 ):
     db = get_async_db()
     base_filter = _build_filter(source, location, type, experience, posted)
@@ -254,7 +341,7 @@ async def search_jobs(
     if not tokens:
         query = {**base_filter, "$text": {"$search": q}}
         total = await db.jobs.count_documents(query)
-        docs = await db.jobs.find(query).skip(skip).limit(limit).to_list(length=limit)
+        docs = await db.jobs.find(query).sort(_resolve_find_sort(sort, has_skills=False)).skip(skip).limit(limit).to_list(length=limit)
         return {
             "jobs": [serialize_job(doc) for doc in docs],
             "total": total,
@@ -327,7 +414,7 @@ async def search_jobs(
     facet_stage = {
         "$facet": {
             "docs": [
-                {"$sort": {"title_hits": -1, "skill_hits": -1, "total_hits": -1, "score": -1, "_id": 1}},
+                {"$sort": _resolve_agg_sort(sort, {"title_hits": -1, "skill_hits": -1, "total_hits": -1, "score": -1, "_id": 1})},
                 {"$skip": skip},
                 {"$limit": limit},
             ],
@@ -371,7 +458,7 @@ async def search_jobs(
         fb_facet = {
             "$facet": {
                 "docs": [
-                    {"$sort": {"title_hits": -1, "skill_hits": -1, "score": -1, "_id": 1}},
+                    {"$sort": _resolve_agg_sort(sort, {"title_hits": -1, "skill_hits": -1, "score": -1, "_id": 1})},
                     {"$skip": skip},
                     {"$limit": limit},
                 ],

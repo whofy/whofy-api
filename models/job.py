@@ -60,6 +60,10 @@ class Job(BaseModel):
     # Same real-world job on multiple sources → same canonical_fingerprint.
     # Consumed by pipeline/dedupe_jobs.py to remove duplicate rows.
     canonical_fingerprint: Optional[str] = None
+    # Precomputed lowercase tokens of `location` (e.g. "Bengaluru, India" →
+    # ["bengaluru", "india"]). Powers the indexed location filter in
+    # fetch_api/jobs.py — see listings/shared/storage.py::_tokenize_location.
+    location_tokens: List[str] = Field(default_factory=list)
 
     @field_validator("company_domain", "description", "logo_url", mode="before")
     @classmethod
