@@ -481,48 +481,215 @@ async def search_jobs(
     }
 
 
-_JUNK_LOC_RE = re.compile(
-    r"https?:|&#|\.com|\.io|\.dev|\.net\b|you&#|we&#|I&#|^n/a$"
-    r"|[{}()\[\]]|\.{2,}|[?!]"
-    r"|you'll|we're|you're|i'm|i don"
-    r"|&amp|&quot|&lt|&gt|CRUD|Multiple "
-    r"|^\.NET$| OR | & | EMEA"
-    r"|^[A-Z]{2,4}\.[A-Z]{2}\.",
+# Countries that scrapers write in multiple string forms. Normalized so
+# "USA", "U.S.A.", "United States of America" all fold into one dropdown row.
+_COUNTRY_ALIASES = {
+    "usa": "United States",
+    "u.s.a.": "United States",
+    "u.s.": "United States",
+    "us": "United States",
+    "united states of america": "United States",
+    "america": "United States",
+    "uk": "United Kingdom",
+    "u.k.": "United Kingdom",
+    "great britain": "United Kingdom",
+    "gb": "United Kingdom",
+    "uae": "United Arab Emirates",
+    "u.a.e.": "United Arab Emirates",
+}
+
+# Country names, canonical form. Used to detect entries where the first
+# comma-part is a country (reversed "Country, City" order — junk).
+_KNOWN_COUNTRIES = {
+    "united states", "united kingdom", "united arab emirates",
+    "canada", "india", "germany", "france", "spain", "italy",
+    "netherlands", "belgium", "sweden", "norway", "denmark", "finland",
+    "poland", "portugal", "ireland", "australia", "new zealand",
+    "singapore", "japan", "south korea", "china", "hong kong", "taiwan",
+    "brazil", "argentina", "mexico", "colombia", "chile", "peru",
+    "israel", "south africa", "egypt", "nigeria", "kenya", "morocco",
+    "philippines", "indonesia", "malaysia", "thailand", "vietnam",
+    "pakistan", "bangladesh", "sri lanka", "turkey", "russia", "ukraine",
+    "romania", "czech republic", "hungary", "austria", "switzerland",
+    "greece", "estonia", "latvia", "lithuania", "bulgaria", "slovakia",
+    "slovenia", "croatia", "serbia", "iceland", "malta", "luxembourg",
+    "cyprus", "afghanistan", "saudi arabia", "qatar", "kuwait", "bahrain",
+    "oman", "jordan", "lebanon", "iceland",
+}
+
+# Rejected outright — work-type words, not places.
+_WORK_TYPE_WORDS = {
+    "remote", "hybrid", "onsite", "on-site", "on site",
+    "anywhere", "worldwide", "flexible", "n/a", "na",
+}
+
+# Strip work-type prefixes off the raw location before we parse it as
+# geography. Handles "Remote — United States", "Remote (India)",
+# "Hybrid / London", "Onsite: Berlin".
+_WORK_TYPE_PREFIX_RE = re.compile(
+    r"^\s*(?:remote|hybrid|on[-\s]?site|onsite|fully\s+remote)"
+    r"\s*[—\-\(\)/:,]+\s*",
     re.IGNORECASE,
 )
 
+# Junk we never want to display as a location option: URLs, HTML entities,
+# code brackets, marketing prefixes, multi-region joiners like " / " and
+# " & ", and Adzuna-style source codes like "US.VA.RESTON".
+_LOC_JUNK_RE = re.compile(
+    r"https?://|\.com\b|\.net\b|\.io\b|\.dev\b|&#|&amp|&quot|&lt|&gt"
+    r"|[*{}\[\]?!]"
+    r"|[/&|]|\bor\b|\.{2,}"
+    r"|^[A-Z]{2,4}\.[A-Z]{2,}",
+    re.IGNORECASE,
+)
 
-def _is_valid_location(loc: str) -> bool:
-    if not loc or len(loc) < 2 or len(loc) > 60:
-        return False
-    if "remote" in loc.lower():
-        return False
-    if _JUNK_LOC_RE.search(loc):
-        return False
-    if sum(1 for c in loc if c == ' ') > 8:
-        return False
-    return True
+# Words that mean the raw string is a job title, marketing text, or a
+# generic placeholder rather than a place.
+_NOT_A_PLACE_WORDS = {
+    "engineer", "developer", "designer", "manager", "analyst", "scientist",
+    "specialist", "consultant", "architect", "lead", "director",
+    "product", "senior", "junior", "intern", "software",
+    "multiple", "various", "any", "all", "here", "add", "posting",
+}
+
+
+def _titlecase_place(part: str) -> str:
+    """'united states' → 'United States'. Preserves uppercase acronyms
+    ('USA', 'UK') and existing 2-letter state codes ('CA', 'NY')."""
+    if not part:
+        return part
+    # Country alias first — canonicalizes "usa" → "United States" etc.
+    lower = part.strip().lower()
+    if lower in _COUNTRY_ALIASES:
+        return _COUNTRY_ALIASES[lower]
+    upper_words = {"usa", "uk", "uae", "eu"}
+    out = []
+    for w in part.split():
+        wl = w.lower()
+        if wl in upper_words:
+            out.append(w.upper())
+        elif len(w) == 2 and w.isalpha() and w.isupper():
+            out.append(w)  # keep state codes like "CA", "NY"
+        else:
+            out.append(w.capitalize())
+    return " ".join(out)
+
+
+def _clean_location_display(raw: str) -> str | None:
+    """Turn a raw scraped location into a clean 'City, Country' string, or
+    None to drop. Rejects addresses, work-type-only strings, and junk."""
+    if not raw:
+        return None
+    s = raw.strip()
+    # Strip leading "Remote — ", "Hybrid / ", "Onsite: " prefixes AND leading
+    # noise like brackets, quotes, dollar signs, slashes.
+    prev = None
+    while prev != s:
+        prev = s
+        s = _WORK_TYPE_PREFIX_RE.sub("", s).strip(" -—:()/,\"'`$#~|\\")
+    if not s or len(s) < 2 or len(s) > 80:
+        return None
+    if _LOC_JUNK_RE.search(s):
+        return None
+    # Reject street addresses / marketing counts ("1530 FM 973 Taylor",
+    # "10 Locations", "100% Remote") — never a real place name.
+    if s[0].isdigit():
+        return None
+    # First character must be an ASCII letter — anything else is junk
+    # fragments like "$175", "/^full", "√ Remote", or CJK/mojibake noise.
+    if not ('a' <= s[0].lower() <= 'z'):
+        return None
+    # If the string reads like a job title / marketing placeholder rather
+    # than a place, drop it. Checks whole-word matches to avoid killing
+    # real names ("Product Way" the street would be gone, but so would
+    # "AI Product Engineer" the job title — the latter is far more common).
+    low = s.lower()
+    if any(re.search(rf"\b{re.escape(w)}\b", low) for w in _NOT_A_PLACE_WORDS):
+        return None
+    # Catch scraper mishaps where "Remote" was concatenated straight into
+    # description text ("Remotelegion Is Building A Platform..."). The
+    # earlier work-type check requires a word boundary; this one doesn't.
+    for prefix in ("remote", "hybrid", "onsite"):
+        if low.startswith(prefix) and (len(s) == len(prefix) or not s[len(prefix)].isspace()):
+            # Real place would have a space or punctuation after; if the
+            # next char is another letter, it's fused garbage.
+            if len(s) > len(prefix) and s[len(prefix)].isalpha():
+                return None
+    # Sentence-like entries are never place names. Real "City, State,
+    # Country" caps out around 6 words; anything longer is description text.
+    if len(s.split()) > 6:
+        return None
+    if s.lower() in _WORK_TYPE_WORDS:
+        return None
+    # Reject entries whose lower-case body contains work-type words —
+    # "Remote India", "Chicago Or Remote", "Hybrid Or Remote", "Onsite/hybrid"
+    # are all noise, not places we want in the dropdown. Real cities named
+    # "Remote" or "Hybrid" don't exist.
+    low = s.lower()
+    if any(re.search(rf"\b{re.escape(w)}\b", low) for w in _WORK_TYPE_WORDS):
+        return None
+    # Split into comma parts. Common shapes:
+    #   "Chicago, IL"                    → City, State
+    #   "Bengaluru, India"               → City, Country
+    #   "Chicago, IL, USA"               → City, State, Country
+    #   "Chicago, IL, United States"     → City, State, Country
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if not parts:
+        return None
+    # Any single part that's itself a work-type word gets dropped.
+    parts = [p for p in parts if p.lower() not in _WORK_TYPE_WORDS]
+    if not parts:
+        return None
+    # Normalize each part (country aliases + case).
+    parts = [_titlecase_place(p) for p in parts]
+    # Reject reversed-order entries where the FIRST part is a country name
+    # ("United States, Atlanta", "Afghanistan, United Arab Emirates",
+    # "United States, India" — dual-country blobs or bad ordering). Real
+    # "City, Country" always has the city first.
+    if parts[0].lower() in _KNOWN_COUNTRIES and len(parts) > 1:
+        # Single-country entries would have `len(parts) == 1` and never hit
+        # this branch, so "United States" alone still passes.
+        return None
+    # Prefer City + Country (first + last) when we have 3+ parts, so
+    # "Chicago, IL, United States" collapses with "Chicago, United States"
+    # instead of leaking a separate "Chicago, IL, United States" row.
+    if len(parts) >= 3:
+        return f"{parts[0]}, {parts[-1]}"
+    if len(parts) == 2:
+        return f"{parts[0]}, {parts[1]}"
+    return parts[0]
 
 
 @router.get("/api/locations")
 @limiter.limit("10/minute")
 async def get_locations(request: Request):
+    """Dropdown source. Deduped, work-type-free, formatted as 'City, Country'
+    (or 'City' / 'Country' alone when that's all the source gave us).
+    Backed by the raw `location` field with heavy cleaning — using
+    `location_tokens` loses the city-country pairing since it's a flat array."""
     cached = _cache_get("locations")
     if cached is not None:
         return cached
 
     db = get_async_db()
-    raw = [v for v in await db.jobs.distinct("location") if v and v.strip()]
-    locations = set()
-    for loc in raw:
-        if ";" in loc:
-            for part in loc.split(";"):
-                part = part.strip()
-                if _is_valid_location(part):
-                    locations.add(part)
-        elif _is_valid_location(loc):
-            locations.add(loc)
-    result = sorted(locations)
+    raw_values = [v for v in await db.jobs.distinct("location") if v and v.strip()]
+    seen: set[str] = set()
+    for raw in raw_values:
+        # Some sources join multiple locations with ";" — split those out.
+        for chunk in raw.split(";"):
+            cleaned = _clean_location_display(chunk)
+            if cleaned:
+                seen.add(cleaned)
+    # Dedupe city-only rows when a "city, country" form of the same city
+    # exists — e.g. drop "Las Vegas" if "Las Vegas, United States" is present.
+    # But keep single-token COUNTRIES like "United States" alone: something
+    # is a country (not a city being deduped) if it also shows up as the
+    # last comma-part of another entry.
+    first_parts = {v.split(",")[0].strip().lower() for v in seen if "," in v}
+    last_parts  = {v.split(",")[-1].strip().lower() for v in seen if "," in v}
+    city_only = first_parts - last_parts
+    seen = {v for v in seen if "," in v or v.strip().lower() not in city_only}
+    result = sorted(seen)
     _cache_set("locations", result)
     return result
 
