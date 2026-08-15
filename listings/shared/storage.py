@@ -16,8 +16,8 @@ DB_NAME = "whofy"
 JOBS_COLLECTION = "jobs"
 REJECTIONS_COLLECTION = "ingestion_rejections"
 DEFAULT_SOURCE_CAP = 20000
-EXPIRY_DAYS = 28
-MAX_AGE_DAYS = 28
+EXPIRY_DAYS = 14
+MAX_AGE_DAYS = 14
 
 # Capped collection: auto-drops oldest docs when full. Sized to hold roughly
 # the last 500 rejections. Debugging tool only — safe to lose old rows.
@@ -431,12 +431,29 @@ def cleanup_non_english_jobs() -> int:
 
 
 def cleanup_expired_jobs(expiry_days: int = EXPIRY_DAYS) -> int:
+    """Delete jobs on two conditions (whichever matches):
+      1. `last_seen_at < cutoff` — source removed the posting >expiry_days ago.
+      2. `posted_at < cutoff` — job was originally posted >expiry_days ago.
+
+    #2 is critical for staying on Atlas free tier. Without it, jobs still
+    live on their source keep bumping `last_seen_at` and never age out,
+    which lets the DB grow to the retention floor of every source combined.
+    With #2, the DB is bounded to "jobs posted in the last N days" regardless
+    of how long the source keeps the listing open.
+
+    Jobs without a `posted_at` (some Lever postings) are only affected by
+    condition #1."""
     client = get_client()
     db = client[DB_NAME]
     collection = db[JOBS_COLLECTION]
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=expiry_days)
-    result = collection.delete_many({"last_seen_at": {"$lt": cutoff}})
+    result = collection.delete_many({
+        "$or": [
+            {"last_seen_at": {"$lt": cutoff}},
+            {"posted_at":    {"$lt": cutoff}},
+        ]
+    })
     return result.deleted_count
 
 
