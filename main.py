@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from config.settings import settings
@@ -31,7 +32,12 @@ app.include_router(chat_router)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-origins = settings.cors_origins.split(",")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Strip whitespace and drop empties: CORS_ORIGINS is a comma-separated env var,
+# and a natural "a.com, b.com" would otherwise yield " b.com", which matches no
+# browser Origin header and fails silently.
+origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,

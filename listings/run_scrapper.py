@@ -107,8 +107,12 @@ def run_ingestion():
     failed = [r for r in results if r["status"] == "failed"]
 
     if failed:
-        print(f"\n{len(failed)} of {len(results)} source(s) FAILED — skipping cleanup to protect data.")
-        print(f"Failed: {', '.join(r['name'] for r in failed)}")
+        print(f"\n{len(failed)} of {len(results)} source(s) FAILED: {', '.join(r['name'] for r in failed)}")
+
+    # See listings/run_api.py for the rationale: one flaky source must not
+    # switch off retention. Only a total failure skips cleanup.
+    if failed and len(failed) == len(results):
+        print("\nAll sources failed — skipping cleanup (systemic failure, not a flaky source).")
     else:
         print(f"\n--- Cleanup ---")
         deleted = cleanup_expired_jobs()

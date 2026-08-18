@@ -34,7 +34,12 @@ _SKILL_PATTERN_CS = re.compile(
 
 _SKILL_CANONICAL = {s.lower(): s for s in _UNIQUE_SKILLS}
 
-MAX_EXTRACTED_SKILLS = 15
+# Raised from 15 to 25 when the text index moved from `description` to
+# `required_skills`. At 15, a job listing 20+ technologies had the tail
+# truncated — measured at 218 jobs that mention React in the description but
+# had it cut from required_skills, which would have made them unfindable by a
+# React search once the index stopped covering description.
+MAX_EXTRACTED_SKILLS = 25
 
 
 def detect_work_type(title: str, location: str, description: str) -> str:

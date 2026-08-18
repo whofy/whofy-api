@@ -158,12 +158,17 @@ def test_run_ingestion_all_success_runs_cleanup(_stub_runner_dependencies, monke
     assert _stub_runner_dependencies["cleanup_non_english"] == 1
 
 
-def test_run_ingestion_skips_cleanup_and_exits_on_failure(_stub_runner_dependencies, monkeypatch):
+def test_run_ingestion_still_cleans_up_when_one_source_fails(_stub_runner_dependencies, monkeypatch):
     """
-    Fix #6 regression guard — when ANY source fails:
-      1. cleanup_expired_jobs MUST NOT run (data-safety)
-      2. cleanup_non_english_jobs MUST NOT run
-      3. sys.exit(1) MUST fire so CI marks the run red → email notification
+    One flaky source must NOT switch off retention.
+
+    Cleanup used to be skipped whenever any source failed. Deletion requires
+    RETENTION_DAYS of consecutive staleness, so a single failed run can't
+    delete anything — but skipping cleanup let the collection grow past the
+    Atlas budget cleanup exists to protect.
+
+    The run is still marked failed (exit 1) so CI goes red and watchers get
+    an email.
     """
     def failing_fetcher(mp_executor=None):
         raise RuntimeError("Adzuna API down")
@@ -183,5 +188,31 @@ def test_run_ingestion_skips_cleanup_and_exits_on_failure(_stub_runner_dependenc
 
     assert exc_info.value.code == 1
     assert _stub_runner_dependencies["ensure_indexes"] == 1
+    assert _stub_runner_dependencies["cleanup_expired"] == 1
+    assert _stub_runner_dependencies["cleanup_non_english"] == 1
+
+
+def test_run_ingestion_skips_cleanup_when_every_source_fails(_stub_runner_dependencies, monkeypatch):
+    """
+    Total failure is different from a flaky source — it means no network or no
+    DB. Skip cleanup rather than issue deletes against a broken environment.
+    """
+    def failing_fetcher(mp_executor=None):
+        raise RuntimeError("no network")
+
+    _install_fake_sources(monkeypatch, [
+        ("greenhouse_main", failing_fetcher),
+        ("lever_main", failing_fetcher),
+        ("ashby_main", failing_fetcher),
+        ("remoteok_main", failing_fetcher),
+        ("adzuna_main", failing_fetcher),
+        ("himalayas_main", failing_fetcher),
+    ])
+
+    from listings.run_api import run_ingestion
+    with pytest.raises(SystemExit) as exc_info:
+        run_ingestion()
+
+    assert exc_info.value.code == 1
     assert _stub_runner_dependencies["cleanup_expired"] == 0
     assert _stub_runner_dependencies["cleanup_non_english"] == 0

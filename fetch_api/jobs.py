@@ -120,9 +120,9 @@ def _location_branch(raw: str) -> dict:
     Legacy fallback: pre-2026-08-14 docs have no `location_tokens` field.
     They still match if their raw `location` contains the selection as a
     substring (case-insensitive). This branch dies naturally as ingestion
-    cycles those docs through re-save (or run pipeline/backfill_location_tokens.py
-    to accelerate). Once every doc has tokens the fallback is dead code
-    and safe to remove.
+    cycles those docs through re-save (or run
+    pipeline/archive/backfill_location_tokens.py to accelerate). Once every
+    doc has tokens the fallback is dead code and safe to remove.
     """
     tokens = _tokenize_query_location(raw)
     if not tokens:

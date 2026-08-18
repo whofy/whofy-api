@@ -9,7 +9,8 @@ Guards against regressions of the three related date bugs fixed on 2026-08-11:
 
 from datetime import datetime, timezone, timedelta
 
-from listings.shared.storage import _is_too_old, cleanup_expired_jobs, EXPIRY_DAYS
+from listings.shared.retention import RETENTION_DAYS
+from listings.shared.storage import _is_too_old, cleanup_expired_jobs
 
 
 # ─────────────────────────────────────────────────────────────
@@ -24,7 +25,7 @@ def test_is_too_old_string_recent_returns_false():
 
 def test_is_too_old_string_ancient_returns_true():
     """A string ISO timestamp older than the window IS too old."""
-    ancient = (datetime.now(timezone.utc) - timedelta(days=EXPIRY_DAYS + 5)).isoformat()
+    ancient = (datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS + 5)).isoformat()
     assert _is_too_old(ancient) is True
 
 
@@ -40,7 +41,7 @@ def test_is_too_old_datetime_ancient_returns_true():
     inputs, hit TypeError, and returned False (i.e., "not too old"), silently
     letting old jobs in. This test locks that behavior down.
     """
-    ancient = datetime.now(timezone.utc) - timedelta(days=EXPIRY_DAYS + 5)
+    ancient = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS + 5)
     assert _is_too_old(ancient) is True
 
 
@@ -67,11 +68,11 @@ def test_is_too_old_naive_datetime_treated_as_utc():
 # ─────────────────────────────────────────────────────────────
 
 def test_cleanup_deletes_jobs_last_seen_beyond_window(mock_sync_db):
-    """Jobs whose last_seen_at is older than EXPIRY_DAYS get deleted."""
+    """Jobs whose last_seen_at is older than RETENTION_DAYS get deleted."""
     now = datetime.now(timezone.utc)
     mock_sync_db.jobs.insert_many([
-        {"_id": "stale-1", "last_seen_at": now - timedelta(days=EXPIRY_DAYS + 1)},
-        {"_id": "stale-2", "last_seen_at": now - timedelta(days=EXPIRY_DAYS + 30)},
+        {"_id": "stale-1", "last_seen_at": now - timedelta(days=RETENTION_DAYS + 1)},
+        {"_id": "stale-2", "last_seen_at": now - timedelta(days=RETENTION_DAYS + 30)},
         {"_id": "fresh-1", "last_seen_at": now - timedelta(days=5)},
         {"_id": "fresh-2", "last_seen_at": now},
     ])
@@ -89,7 +90,7 @@ def test_cleanup_uses_datetime_cutoff_not_string(mock_sync_db):
     to `$lt`, which mostly failed to match BSON dates and deleted nothing.
     This test asserts the query actually matches datetime-typed fields.
     """
-    old_dt = datetime.now(timezone.utc) - timedelta(days=EXPIRY_DAYS + 10)
+    old_dt = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS + 10)
     mock_sync_db.jobs.insert_one({"_id": "old", "last_seen_at": old_dt})
     deleted = cleanup_expired_jobs()
     assert deleted == 1

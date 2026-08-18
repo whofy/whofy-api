@@ -2,15 +2,12 @@ import time
 import requests
 from datetime import datetime, timezone, timedelta
 
-from listings.shared.enrich import (
-    bake_required_skills, detect_experience, detect_work_type, extract_required_skills,
-)
 from listings.shared.rate_limiter import TokenBucket
+from listings.shared.retention import RETENTION_DAYS
 from listings.shared.storage import save_jobs
 
 API_URL = "https://himalayas.app/jobs/api"
 PAGE_SIZE = 100
-MAX_AGE_DAYS = 30
 PAGE_DELAY = 1
 MAX_RETRIES = 3
 
@@ -25,7 +22,7 @@ HEADERS = {
 
 
 def _cutoff_ts() -> int:
-    return int((datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)).timestamp())
+    return int((datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)).timestamp())
 
 
 def _fetch_page(offset: int) -> dict:
@@ -151,20 +148,16 @@ BATCH_SIZE = 2000
 from listings.shared.pipeline import process_jobs_batch
 
 def main(mp_executor=None):
-    import time
-    t_start = time.time()
-    
     print("Fetching jobs from Himalayas...")
     all_jobs = fetch_himalayas_jobs()
-    print(f"Total jobs fetched (last {MAX_AGE_DAYS} days): {len(all_jobs)}")
+    print(f"Total jobs fetched (last {RETENTION_DAYS} days): {len(all_jobs)}")
 
     print("Running process_jobs_batch (enrichment + filtering)...")
     batch_result = process_jobs_batch(all_jobs, mp_executor=mp_executor)
     accepted_jobs = batch_result["accepted"]
     tech_filtered = batch_result["tech_filtered"]
     lang_filtered = batch_result["lang_filtered"]
-    
-    t_filter = time.time()
+
     print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
     print(f"Filtered (Tech): {tech_filtered}")
     print(f"Filtered (Lang): {lang_filtered}")
