@@ -1,4 +1,5 @@
 import re
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -11,13 +12,12 @@ except ImportError:
     pass
 
 from db.mongo import get_client
+from listings.shared.retention import RETENTION_DAYS
 
 DB_NAME = "whofy"
 JOBS_COLLECTION = "jobs"
 REJECTIONS_COLLECTION = "ingestion_rejections"
 DEFAULT_SOURCE_CAP = 20000
-EXPIRY_DAYS = 14
-MAX_AGE_DAYS = 14
 
 # Capped collection: auto-drops oldest docs when full. Sized to hold roughly
 # the last 500 rejections. Debugging tool only — safe to lose old rows.
@@ -238,7 +238,7 @@ def _is_non_english(job: dict) -> bool:
 def _is_too_old(posted_at) -> bool:
     if not posted_at:
         return False
-    cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
     if isinstance(posted_at, datetime):
         posted = posted_at
     elif isinstance(posted_at, str):
@@ -251,6 +251,36 @@ def _is_too_old(posted_at) -> bool:
     if posted.tzinfo is None:
         posted = posted.replace(tzinfo=timezone.utc)
     return posted < cutoff
+
+
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _posted_sort_key(job: dict) -> datetime:
+    """Sort key for the source-cap truncation in save_jobs.
+
+    This runs BEFORE Pydantic validation, so `posted_at` may still be any of
+    three shapes: a real datetime (Greenhouse/Ashby/Adzuna/RemoteOK/Himalayas),
+    an ISO string (Workday/WWR), or None (Lever, and any source that couldn't
+    parse its own date).
+
+    The previous key was `j.get("posted_at") or ""`, which substituted a str
+    for None and then asked Python to order a datetime against a str —
+    TypeError, which escaped save_jobs, failed the whole source, and (because
+    run_ingestion skips cleanup when any source fails) took down retention
+    enforcement and the remaining workflow steps with it.
+
+    Undated jobs sort last; they're kept only if there's room under the cap.
+    """
+    pa = job.get("posted_at")
+    if isinstance(pa, str):
+        try:
+            pa = datetime.fromisoformat(pa.replace("Z", "+00:00"))
+        except ValueError:
+            return _EPOCH
+    if isinstance(pa, datetime):
+        return pa if pa.tzinfo else pa.replace(tzinfo=timezone.utc)
+    return _EPOCH
 
 
 def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> dict:
@@ -295,23 +325,20 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
 
     capped = False
     if len(jobs) > cap:
-        jobs = sorted(
-            jobs, key=lambda j: j.get("posted_at") or "", reverse=True
-        )[:cap]
+        jobs = sorted(jobs, key=_posted_sort_key, reverse=True)[:cap]
         capped = True
 
     client = get_client()
     db = client[DB_NAME]
     collection = db[JOBS_COLLECTION]
 
-    fingerprints = [j["fingerprint"] for j in jobs]
-    existing = set()
-    if fingerprints:
-        cursor = collection.find(
-            {"fingerprint": {"$in": fingerprints}, "source": {"$ne": source}},
-            {"fingerprint": 1},
-        )
-        existing = {doc["fingerprint"] for doc in cursor}
+    # NOTE: there was a "skip jobs already ingested from another source" query
+    # here. It was unreachable by construction — _fingerprint() embeds the
+    # source name in the fingerprint, so {"fingerprint": {"$in": ...},
+    # "source": {"$ne": source}} can never match. It always returned empty
+    # while shipping an $in list of up to `cap` strings to Atlas on every save.
+    # Cross-source dedup is handled properly by canonical_fingerprint +
+    # pipeline/dedupe_jobs.py.
 
     # Real datetime — NOT `.isoformat()`. Pymongo serializes datetime → BSON
     # Date; a string would land as BSON String. cleanup_expired_jobs then
@@ -320,15 +347,11 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
     # would make the cleanup match every job in the collection. See
     # test_datetime_types.py for the guard test that pins this invariant.
     now = datetime.now(timezone.utc)
-    skipped = 0
 
     from models.job import Job
     operations = []
     schema_rejected = 0
     for job in jobs:
-        if job["fingerprint"] in existing:
-            skipped += 1
-            continue
         job["last_seen_at"] = now
         job["lang_checked"] = True
 
@@ -359,7 +382,6 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
         "modified": 0,
         "capped": capped,
         "total_processed": len(jobs),
-        "cross_source_skipped": skipped,
         "too_old_skipped": too_old,
         "non_english_skipped": non_english,
         "schema_rejected": schema_rejected,
@@ -376,8 +398,6 @@ def save_jobs(jobs: list[dict], source: str, cap: int = DEFAULT_SOURCE_CAP) -> d
     return result_info
 
 
-from concurrent.futures import ProcessPoolExecutor
-
 def _process_batch(docs):
     to_delete = []
     to_mark = []
@@ -392,6 +412,14 @@ def cleanup_non_english_jobs() -> int:
     client = get_client()
     db = client[DB_NAME]
     collection = db[JOBS_COLLECTION]
+
+    # save_jobs sets lang_checked=True on every write, so the only rows this
+    # can ever match are legacy docs from before that was true. Check the count
+    # first — once they're drained this is a single cheap query per run instead
+    # of spinning up an 8-process pool to scan for nothing.
+    pending = collection.count_documents({"lang_checked": {"$ne": True}})
+    if pending == 0:
+        return 0
 
     removed = 0
     batch_size = 2000
@@ -430,7 +458,7 @@ def cleanup_non_english_jobs() -> int:
     return removed
 
 
-def cleanup_expired_jobs(expiry_days: int = EXPIRY_DAYS) -> int:
+def cleanup_expired_jobs(expiry_days: int = RETENTION_DAYS) -> int:
     """Delete jobs on two conditions (whichever matches):
       1. `last_seen_at < cutoff` — source removed the posting >expiry_days ago.
       2. `posted_at < cutoff` — job was originally posted >expiry_days ago.
@@ -457,6 +485,64 @@ def cleanup_expired_jobs(expiry_days: int = EXPIRY_DAYS) -> int:
     return result.deleted_count
 
 
+# Fields covered by the `$text` index powering /api/search and the skill
+# ranking in /api/matches.
+#
+# `description` used to be in here. It cost 253 MB of a 283 MB index budget —
+# 3.5x the size of the entire jobs collection — because a text index stores an
+# entry per meaningful word, and job descriptions are long. It bought very
+# little: /api/search already discards any hit that only matched the
+# description ("Description-only hits are noise"), so most of what that index
+# produced was candidates the very next stage threw away.
+#
+# `required_skills` covers the same ground at a fraction of the size: it's the
+# skill vocabulary already extracted from the title and description at ingest.
+TEXT_INDEX_FIELDS = ("title", "required_skills")
+
+
+def _existing_text_index(collection):
+    """Return (name, {fields}) for the collection's text index, or None.
+
+    A text index reports its covered fields in `weights`, not in `key` — `key`
+    is always {_fts: 'text', _ftsx: 1}.
+    """
+    for idx in collection.list_indexes():
+        weights = idx.get("weights")
+        if weights:
+            return idx["name"], set(weights.keys())
+    return None
+
+
+def _ensure_text_index(collection) -> None:
+    """Create the text index, replacing it if it covers the wrong fields.
+
+    MongoDB allows only ONE text index per collection, so there is no way to
+    build the replacement alongside the old one and swap atomically. The drop
+    has to come first, which leaves a window — however brief — where `$text`
+    queries fail with "text index required for $text query". Both /api/search
+    and the skill branch of /api/matches error during that window.
+
+    That window is why this runs from ensure_indexes at the start of
+    ingestion (00:00 UTC) rather than on API startup.
+    """
+    desired = set(TEXT_INDEX_FIELDS)
+    existing = _existing_text_index(collection)
+
+    if existing and existing[1] == desired:
+        return
+
+    if existing:
+        name, fields = existing
+        print(
+            f"Text index '{name}' covers {sorted(fields)}, expected {sorted(desired)} — "
+            f"replacing. $text queries will fail until the new index is built."
+        )
+        collection.drop_index(name)
+
+    collection.create_index([(f, "text") for f in TEXT_INDEX_FIELDS])
+    print(f"Text index created on {sorted(desired)}.")
+
+
 def ensure_indexes():
     client = get_client()
     db = client[DB_NAME]
@@ -466,7 +552,7 @@ def ensure_indexes():
     collection.create_index([("posted_at", -1), ("_id", 1)])
     collection.create_index([("last_seen_at", -1)])
     collection.create_index([("added_at", -1)])
-    collection.create_index([("title", "text"), ("description", "text")])
+    _ensure_text_index(collection)
     collection.create_index([("work_type", 1)])
     collection.create_index([("experience_level", 1)])
     # Location and source filters used to COLLSCAN the whole jobs collection
@@ -478,7 +564,10 @@ def ensure_indexes():
     # Supports the server-side "Company (A–Z)" sort on /api/matches and
     # /api/search. Without this, sorting by company COLLSCANs the whole
     # jobs collection on every page click.
-    collection.create_index([("company", 1), ("_id", 1)])
+    # NOTE: a plain ("company", 1) index used to live here. The A-Z sort moved
+    # to `company_sort` (which strips leading punctuation), leaving the old one
+    # unread — confirmed by $indexStats: 0 accesses, 2.4 MB, updated on every
+    # write. Dropped by pipeline/migrate_text_index.py.
     collection.create_index([("company_sort", 1), ("_id", 1)])
     collection.create_index("canonical_fingerprint")  # for cross-source dedup grouping
 

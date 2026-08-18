@@ -53,8 +53,7 @@ from listings.shared.pipeline import process_jobs_batch
 
 def main(mp_executor=None):
     import time
-    from listings.shared.storage import save_jobs
-    
+
     t_start = time.time()
     all_jobs = []
 

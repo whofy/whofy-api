@@ -25,11 +25,19 @@ jobs:
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
         run: uv run python ingest_api.py
+      # API ingestion exits 1 if any single source failed, which used to abort
+      # the job here — so one flaky board meant the scrapers never ran and
+      # nothing was deduplicated that day. These steps are independent of that
+      # outcome, so they run anyway; the job is still marked red by the failing
+      # step above. `!cancelled()` (rather than `always()`) so a manually
+      # cancelled run still stops.
       - name: Run Scraper Ingestion
+        if: ${{ !cancelled() }}
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: uv run python ingest_scrapper.py
       - name: Deduplicate Jobs
+        if: ${{ !cancelled() }}
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: uv run python pipeline/dedupe_jobs.py

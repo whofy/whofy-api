@@ -48,7 +48,7 @@ Here is how Whofy works — use this knowledge to answer user questions:
 - Himalayas (remote job aggregator)
 - Adzuna (job search engine covering India, US, UK, Canada, Australia, and more)
 - Workday, We Work Remotely, and Hacker News (additional sources)
-- The database holds thousands of live tech listings. New jobs are added every 24 hours, and roles not seen for 28 days are removed
+- The database holds thousands of live tech listings. New jobs are added every 24 hours, and roles not seen for 14 days are removed
 
 **Filters available:**
 - Skills (pre-filled from your resume — you can add or remove them)

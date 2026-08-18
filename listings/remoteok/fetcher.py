@@ -50,9 +50,6 @@ def main(mp_executor=None):
     print("Fetching RemoteOK jobs...")
     jobs = fetch_remoteok_jobs()
 
-    import time
-    t_start = time.time()
-    
     print(f"\nTotal jobs fetched: {len(jobs)}")
 
     print("Running process_jobs_batch (enrichment + filtering)...")
@@ -60,8 +57,7 @@ def main(mp_executor=None):
     accepted_jobs = batch_result["accepted"]
     tech_filtered = batch_result["tech_filtered"]
     lang_filtered = batch_result["lang_filtered"]
-    
-    t_filter = time.time()
+
     print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
     print(f"Filtered (Tech): {tech_filtered}")
     print(f"Filtered (Lang): {lang_filtered}")

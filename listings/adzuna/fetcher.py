@@ -174,9 +174,6 @@ def main(mp_executor=None):
                 executor.shutdown(wait=False, cancel_futures=True)
                 break
 
-    import time
-    t_start = time.time()
-    
     print(f"\nTotal unique jobs fetched: {len(all_jobs)}")
 
     print("Running process_jobs_batch (enrichment + filtering)...")
@@ -184,8 +181,7 @@ def main(mp_executor=None):
     accepted_jobs = batch_result["accepted"]
     tech_filtered = batch_result["tech_filtered"]
     lang_filtered = batch_result["lang_filtered"]
-    
-    t_filter = time.time()
+
     print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
     print(f"Filtered (Tech): {tech_filtered}")
     print(f"Filtered (Lang): {lang_filtered}")

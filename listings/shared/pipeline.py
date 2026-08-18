@@ -4,12 +4,13 @@ from concurrent.futures import ProcessPoolExecutor
 from langdetect import detect
 from listings.shared.enrich import extract_required_skills, detect_work_type, detect_experience, bake_required_skills
 from listings.shared.normalize import full_text, strip_html
+from listings.shared.retention import RETENTION_DAYS
 from listings.shared.tech_filter import is_tech_job
 
-# Same 28-day cutoff enforced by save_jobs. Applied here so we don't run the
-# expensive enrichment (regex + langdetect + HTML strip) on jobs the storage
-# layer is about to drop anyway — measured at ~3,600 wasted jobs per run.
-_MAX_AGE_DAYS = 28
+# Same cutoff save_jobs enforces — imported, not re-declared, because these two
+# drifted apart (28 here vs 14 there) and the gap meant every job aged 14-28
+# days paid for HTML stripping, skill regex, and langdetect before storage
+# threw it away seconds later.
 
 
 def _is_too_old(posted_at) -> bool:
@@ -17,7 +18,7 @@ def _is_too_old(posted_at) -> bool:
         # Sources that don't expose a post date (Lever) — let storage decide.
         # Filtering them here would silently drop the entire source.
         return False
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_MAX_AGE_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
     if isinstance(posted_at, datetime):
         posted = posted_at
     elif isinstance(posted_at, str):
