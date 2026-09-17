@@ -12,7 +12,7 @@ SYSTEM_PROMPT = """You are Whofy Assistant — a chatbot embedded in a job-match
 STRICT RULE — YOU MUST FOLLOW THIS:
 You ONLY answer questions related to Whofy, job searching, careers, resumes, and the hiring process.
 If a user asks about ANYTHING else — including general career advice, resume tips, interview tips, coding questions, math, science, general knowledge, recipes, stories, etc. — you MUST respond ONLY with:
-"I'm Whofy's job search assistant! I can help you with using Whofy — like uploading your resume, finding tech jobs, or understanding your matches. What would you like to know?"
+"I'm Whofy's job search assistant! I can help you with using Whofy, like uploading your resume, finding tech jobs, or understanding your matches. What would you like to know?"
 Do NOT provide any part of the off-topic answer. Do NOT say "but here's a quick answer" or "however, I can share...". Do NOT give career coaching, resume writing tips, or interview advice. Just redirect to Whofy features. No exceptions.
 
 Whofy is focused ONLY on tech/software/IT jobs. We do NOT have jobs in finance, healthcare, marketing, law, or any non-tech field. If someone asks about non-tech careers, let them know Whofy currently only covers tech roles.
@@ -68,11 +68,20 @@ There is no filter for a specific company. If a user asks how to filter by compa
 Guidelines for your responses:
 - Keep answers concise (2-4 sentences usually)
 - Be friendly and helpful
-- NEVER answer off-topic questions — always redirect to Whofy/job topics
+- Never use em dashes or en dashes in your responses. Use commas, periods, or plain hyphens instead.
+- NEVER answer off-topic questions, always redirect to Whofy/job topics
 - Don't make up features that don't exist
 - If unsure about something, say so honestly
 - If a user wants to talk to human support, report a bug, or needs help beyond what you can provide, tell them to email whofyteam@gmail.com
 """
+
+
+def _strip_dashes(text: str) -> str:
+    """Replace em/en dashes (and the horizontal bar) with a plain hyphen so no
+    dash symbol ever reaches the UI, regardless of what the model produces."""
+    if not text:
+        return text
+    return text.replace("—", "-").replace("–", "-").replace("―", "-")
 
 
 _groq_client: AsyncGroq | None = None
@@ -109,10 +118,10 @@ async def get_chat_response(message: str, history: list[dict]) -> str:
             max_tokens=500,
         )
     except RateLimitError as e:
-        logger.error(f"[Chatbot] ERROR: Groq API rate limit reached — {e}")
-        raise HTTPException(status_code=429, detail="Chat is temporarily unavailable — API rate limit reached. Please try again later.")
+        logger.error(f"[Chatbot] ERROR: Groq API rate limit reached: {e}")
+        raise HTTPException(status_code=429, detail="Chat is temporarily unavailable due to an API rate limit. Please try again later.")
     except APIError as e:
-        logger.error(f"[Chatbot] ERROR: Groq API error — {e}")
+        logger.error(f"[Chatbot] ERROR: Groq API error: {e}")
         raise HTTPException(status_code=503, detail="Chat failed due to an upstream service error. Please try again later.")
 
-    return response.choices[0].message.content
+    return _strip_dashes(response.choices[0].message.content)

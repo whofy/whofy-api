@@ -13,8 +13,29 @@ class Settings(BaseSettings):
     groq_resume_parser_api_key: Optional[str] = None
     adzuna_app_id: Optional[str] = None
     adzuna_app_key: Optional[str] = None
-    clerk_secret_key: Optional[str] = None
+
+    # Supabase Auth. The JWKS URL and issuer are derived from the project URL.
+    # supabase_jwt_secret is only needed as a fallback for projects that still
+    # sign tokens with the legacy HS256 shared secret instead of asymmetric
+    # (RS256/ES256) signing keys.
+    supabase_url: Optional[str] = None
+    supabase_jwt_secret: Optional[str] = None
+    # Admin (service_role) key — server-only, never exposed to the frontend.
+    # Required for account deletion (Supabase Admin API).
+    supabase_service_role_key: Optional[str] = None
 
     model_config = SettingsConfigDict(env_file=ENV_FILE, extra="ignore")
+
+    @property
+    def supabase_jwks_url(self) -> Optional[str]:
+        if not self.supabase_url:
+            return None
+        return f"{self.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+
+    @property
+    def supabase_issuer(self) -> Optional[str]:
+        if not self.supabase_url:
+            return None
+        return f"{self.supabase_url.rstrip('/')}/auth/v1"
 
 settings = Settings()
