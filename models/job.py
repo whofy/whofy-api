@@ -60,8 +60,18 @@ class Job(BaseModel):
     # Same real-world job on multiple sources → same canonical_fingerprint.
     # Consumed by pipeline/dedupe_jobs.py to remove duplicate rows.
     canonical_fingerprint: Optional[str] = None
+    # Precomputed lowercase tokens of `location` (e.g. "Bengaluru, India" →
+    # ["bengaluru", "india"]). Powers the indexed location filter in
+    # fetch_api/jobs.py — see listings/shared/storage.py::_tokenize_location.
+    location_tokens: List[str] = Field(default_factory=list)
+    # Sort key for "Company (A-Z)". Leading punctuation stripped so
+    # "*Strello Health" sorts under "S". Display always uses `company`.
+    company_sort: Optional[str] = None
 
-    @field_validator("company_domain", "description", "logo_url", mode="before")
+    # `posted_at` is included so an empty string from a source that couldn't
+    # parse its own date lands as None (undated) rather than failing validation
+    # and dropping the whole job.
+    @field_validator("company_domain", "description", "logo_url", "posted_at", mode="before")
     @classmethod
     def normalize_optional_strings(cls, v):
         if v == "" or (isinstance(v, str) and not v.strip()):

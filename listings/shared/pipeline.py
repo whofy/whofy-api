@@ -1,9 +1,37 @@
 import os
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ProcessPoolExecutor
 from langdetect import detect
 from listings.shared.enrich import extract_required_skills, detect_work_type, detect_experience, bake_required_skills
 from listings.shared.normalize import full_text, strip_html
+from listings.shared.retention import RETENTION_DAYS
 from listings.shared.tech_filter import is_tech_job
+
+# Same cutoff save_jobs enforces — imported, not re-declared, because these two
+# drifted apart (28 here vs 14 there) and the gap meant every job aged 14-28
+# days paid for HTML stripping, skill regex, and langdetect before storage
+# threw it away seconds later.
+
+
+def _is_too_old(posted_at) -> bool:
+    if not posted_at:
+        # Sources that don't expose a post date (Lever) — let storage decide.
+        # Filtering them here would silently drop the entire source.
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+    if isinstance(posted_at, datetime):
+        posted = posted_at
+    elif isinstance(posted_at, str):
+        try:
+            posted = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    else:
+        return False
+    if posted.tzinfo is None:
+        posted = posted.replace(tzinfo=timezone.utc)
+    return posted < cutoff
+
 
 def _is_non_english(title: str, desc: str) -> bool:
     text = f"{title} {desc}".strip()
@@ -17,47 +45,60 @@ def _is_non_english(title: str, desc: str) -> bool:
 
 def process_single_job(job: dict) -> dict | None:
     """
-    Enriches a raw job dictionary. 
-    Returns None if it fails tech filter or non-English filter.
+    Enriches a raw job dictionary.
+    Returns the job dict with a `filtered_reason` set when it doesn't survive
+    (age/tech/lang), or None otherwise.
     """
     title = job.get("title", "")
     raw_desc = job.get("raw_description", "")
     location = job.get("location", "")
-    
+
+    # 1. Age filter — cheapest check, run first so old jobs never pay for
+    #    HTML stripping, regex, or langdetect.
+    if _is_too_old(job.get("posted_at")):
+        job["filtered_reason"] = "too_old"
+        if "raw_description" in job:
+            del job["raw_description"]
+        return job
+
     desc = job.get("description")
     if desc is None:
         desc = strip_html(raw_desc)
-        
+
     detection_text = job.get("detection_text")
     if detection_text is None:
         detection_text = full_text(raw_desc)
-    
-    # 1. Tech Filter
+
+    # 2. Tech Filter
     if not is_tech_job(title, desc):
         job["filtered_reason"] = "tech"
         return job
 
-    # 2. Non-English Filter
+    # 3. Non-English Filter
     if _is_non_english(title, desc[:500]):
         job["filtered_reason"] = "lang"
         return job
-        
+
     req_skills = extract_required_skills(title, detection_text)
-    
+
     # If the job explicitly provided work_type or experience_level, keep it, otherwise detect
     work_type = job.get("work_type") or detect_work_type(title, location, detection_text)
     exp = job.get("experience_level") or detect_experience(title, detection_text)
-    
+
     job["description"] = bake_required_skills(desc, req_skills)
     job["required_skills"] = req_skills
     job["work_type"] = work_type
     job["experience_level"] = exp
     job["filtered_reason"] = None
-    
+    # We already ran langdetect and it passed. Mark the job so save_jobs'
+    # second-pass check short-circuits instead of re-detecting — langdetect
+    # is the single most expensive call in the pipeline.
+    job["lang_checked"] = True
+
     # Remove raw HTML to save memory in IPC transfer
     if "raw_description" in job:
         del job["raw_description"]
-        
+
     return job
 
 def process_jobs_batch(jobs: list[dict], mp_executor: ProcessPoolExecutor = None) -> dict:
@@ -86,20 +127,27 @@ def process_jobs_batch(jobs: list[dict], mp_executor: ProcessPoolExecutor = None
     accepted = []
     tech_filtered = 0
     lang_filtered = 0
-    
+    too_old_filtered = 0
+
     for res in results:
         reason = res.get("filtered_reason")
         if reason == "tech":
             tech_filtered += 1
         elif reason == "lang":
             lang_filtered += 1
+        elif reason == "too_old":
+            too_old_filtered += 1
         else:
             if "filtered_reason" in res:
                 del res["filtered_reason"]
             accepted.append(res)
-            
+
+    if too_old_filtered:
+        print(f"Filtered (Age): {too_old_filtered}")
+
     return {
         "accepted": accepted,
         "tech_filtered": tech_filtered,
-        "lang_filtered": lang_filtered
+        "lang_filtered": lang_filtered,
+        "too_old_filtered": too_old_filtered,
     }

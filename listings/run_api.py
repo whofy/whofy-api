@@ -126,8 +126,21 @@ def run_ingestion():
     failed = [r for r in results if r["status"] == "failed"]
 
     if failed:
-        print(f"\n{len(failed)} of {len(results)} source(s) FAILED — skipping cleanup to protect data.")
-        print(f"Failed: {', '.join(r['name'] for r in failed)}")
+        print(f"\n{len(failed)} of {len(results)} source(s) FAILED: {', '.join(r['name'] for r in failed)}")
+
+    # Cleanup used to be skipped whenever ANY source failed, on the theory that
+    # a source which didn't refresh its jobs' last_seen_at might get them
+    # deleted. But deletion requires RETENTION_DAYS of consecutive staleness —
+    # a single failed run can't delete anything. Meanwhile skipping cleanup let
+    # the collection grow unbounded, which is exactly what cleanup exists to
+    # prevent (Atlas free-tier budget). One flaky board out of 169 should not
+    # switch off retention.
+    #
+    # We still skip when EVERY source failed: that signals something systemic
+    # (no network, no DB) rather than one bad source, and cleanup would likely
+    # fail too.
+    if failed and len(failed) == len(results):
+        print("\nAll sources failed — skipping cleanup (systemic failure, not a flaky source).")
     else:
         print(f"\n--- Cleanup ---")
         deleted = cleanup_expired_jobs()

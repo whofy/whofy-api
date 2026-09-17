@@ -2,17 +2,12 @@ import time
 import requests
 from datetime import datetime, timezone, timedelta
 
-from listings.shared.enrich import (
-    bake_required_skills, detect_experience, detect_work_type, extract_required_skills,
-)
-from listings.shared.normalize import full_text, strip_html
 from listings.shared.rate_limiter import TokenBucket
+from listings.shared.retention import RETENTION_DAYS
 from listings.shared.storage import save_jobs
-from listings.shared.tech_filter import filter_tech_jobs
 
 API_URL = "https://himalayas.app/jobs/api"
 PAGE_SIZE = 100
-MAX_AGE_DAYS = 30
 PAGE_DELAY = 1
 MAX_RETRIES = 3
 
@@ -27,7 +22,7 @@ HEADERS = {
 
 
 def _cutoff_ts() -> int:
-    return int((datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)).timestamp())
+    return int((datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)).timestamp())
 
 
 def _fetch_page(offset: int) -> dict:
@@ -109,15 +104,20 @@ def fetch_himalayas_jobs() -> list[dict]:
     if first_hit_old or total <= PAGE_SIZE:
         return all_jobs
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor
 
     offsets = list(range(PAGE_SIZE, total, PAGE_SIZE))
-    
+
     with ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_offset = {executor.submit(_fetch_page, offset): offset for offset in offsets}
-        
-        for future in as_completed(future_to_offset):
-            offset = future_to_offset[future]
+        futures = [executor.submit(_fetch_page, offset) for offset in offsets]
+
+        # Consume in ascending-offset order, NOT completion order. The API
+        # returns newest-first, so "this page holds a job older than the
+        # cutoff" only means "stop" once every earlier page has been read.
+        # With as_completed(), a high-offset page can finish first and end
+        # the loop while recent low-offset pages are still in flight —
+        # silently dropping them, differently on every run.
+        for offset, future in zip(offsets, futures):
             try:
                 data = future.result()
             except requests.RequestException as e:
@@ -135,9 +135,10 @@ def fetch_himalayas_jobs() -> list[dict]:
                 print(f"  ... fetched ~{len(all_jobs)} jobs so far")
 
             if hit_old:
-                # Stop consuming results; the `with` block drains in-flight
-                # requests on exit — a few extra pages is not worth the
-                # threading complexity to interrupt them.
+                # Every remaining offset is older than the cutoff. Cancel the
+                # queued pages — letting the `with` block drain them was
+                # fetching the whole catalogue on every run.
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
     return all_jobs
@@ -147,20 +148,16 @@ BATCH_SIZE = 2000
 from listings.shared.pipeline import process_jobs_batch
 
 def main(mp_executor=None):
-    import time
-    t_start = time.time()
-    
     print("Fetching jobs from Himalayas...")
     all_jobs = fetch_himalayas_jobs()
-    print(f"Total jobs fetched (last {MAX_AGE_DAYS} days): {len(all_jobs)}")
+    print(f"Total jobs fetched (last {RETENTION_DAYS} days): {len(all_jobs)}")
 
     print("Running process_jobs_batch (enrichment + filtering)...")
     batch_result = process_jobs_batch(all_jobs, mp_executor=mp_executor)
     accepted_jobs = batch_result["accepted"]
     tech_filtered = batch_result["tech_filtered"]
     lang_filtered = batch_result["lang_filtered"]
-    
-    t_filter = time.time()
+
     print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
     print(f"Filtered (Tech): {tech_filtered}")
     print(f"Filtered (Lang): {lang_filtered}")

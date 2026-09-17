@@ -189,13 +189,11 @@ skills:
 - Phoenix
 - Ecto
 - Ktor
-- Micronaut
 - Deno
 - Bun
 - GraphQL
 - gRPC
 - SOAP
-- WebSocket
 - SSE
 - OpenAPI
 - Swagger
@@ -435,7 +433,6 @@ skills:
 - Snowflake
 - Databricks
 - Redshift
-- BigQuery
 - Synapse
 - Delta Lake
 - Apache Iceberg
@@ -473,7 +470,6 @@ skills:
 - Arrow
 - Parquet
 - ORC
-- Avro
 - Machine Learning
 - Deep Learning
 - Artificial Intelligence
@@ -515,7 +511,6 @@ skills:
 - MLOps
 - Feature Store
 - Weights & Biases
-- Neptune
 - Comet
 - DVC
 - ONNX
@@ -572,10 +567,7 @@ skills:
 - App Store
 - Google Play
 - TestFlight
-- Firebase
 - Core Data
-- Realm
-- SQLite
 - ARKit
 - ARCore
 - Core ML
@@ -607,7 +599,6 @@ skills:
 - Cucumber
 - Behave
 - SpecFlow
-- Postman
 - Newman
 - REST Assured
 - Karate
@@ -616,7 +607,6 @@ skills:
 - JMeter
 - Locust
 - Artillery
-- SonarQube
 - Codecov
 - Coveralls
 - Allure
@@ -672,7 +662,6 @@ skills:
 - HashiCorp Vault
 - CyberArk
 - Secrets Management
-- IAM
 - RBAC
 - ABAC
 - PAM
@@ -720,7 +709,6 @@ skills:
 - Unreal Engine
 - Godot
 - CryEngine
-- C++
 - Blueprints
 - Shader
 - HLSL
@@ -796,8 +784,6 @@ skills:
 - NetSuite
 - HubSpot
 - Zoho
-- ABAP
-- Apex
 - Lightning
 - Visualforce
 - MuleSoft
@@ -832,7 +818,6 @@ skills:
 - LaunchDarkly
 - Excel
 - Google Sheets
-- VBA
 - Jira
 - Confluence
 - Trello
@@ -857,7 +842,6 @@ skills:
 - Miro
 - FigJam
 - Lucidchart
-- Solidity
 - Blockchain
 - Web3
 - Ethereum
@@ -884,7 +868,6 @@ skills:
 - Avalanche
 - Arbitrum
 - Optimism
-- Rust
 - Anchor
 - MetaMask
 - WalletConnect
@@ -892,15 +875,11 @@ skills:
 - Firmware
 - RTOS
 - FreeRTOS
-- Zephyr
 - Arduino
 - Raspberry Pi
 - ESP32
 - STM32
 - ARM
-- VHDL
-- Verilog
-- SystemVerilog
 - FPGA
 - ASIC
 - PCB Design
@@ -916,7 +895,6 @@ skills:
 - Robotics
 - PLC
 - SCADA
-- LabVIEW
 - Simulink
 - AutoCAD
 - SolidWorks
@@ -926,8 +904,6 @@ skills:
 - QGIS
 - PostGIS
 - GeoPandas
-- Mapbox
-- Leaflet
 - Google Maps API
 - OpenStreetMap
 - Remote Sensing
@@ -950,13 +926,11 @@ skills:
 - Twilio
 - SendGrid
 - Plaid
-- ElasticSearch
 - Algolia
 - Meilisearch
 - Typesense
 - Socket.IO
 - SignalR
-- Terraform
 - Infrastructure as Code
 - GitOps
 - Site Reliability

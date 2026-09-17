@@ -6,9 +6,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 from listings.shared.pipeline import process_jobs_batch
+from listings.shared.retention import RETENTION_DAYS
 from listings.shared.storage import save_jobs
 
-MAX_AGE_DAYS = 30
 PAGE_SIZE = 20
 MAX_JOBS_PER_COMPANY = 1000
 
@@ -75,14 +75,19 @@ def fetch_workday_jobs(company: dict) -> list[dict]:
             posted_on = job.get("postedOn", "")
             days_ago = _parse_posted_age(posted_on)
 
-            if days_ago is not None and days_ago > MAX_AGE_DAYS:
+            if days_ago is not None and days_ago > RETENTION_DAYS:
                 continue
 
             title = job.get("title", "")
             location = job.get("locationsText", "Not specified")
             external_path = job.get("externalPath", "")
             apply_url = f"{apply_base}{external_path}" if external_path else ""
-            posted_at = _posted_at_from_age(days_ago) if days_ago is not None else ""
+            # None, not "" — Job.posted_at is Optional[datetime], and an empty
+            # string fails validation, which silently binned every posting whose
+            # `postedOn` string we couldn't parse. Undated jobs are a supported
+            # case (Lever has no dates at all); the API's `posted` filter falls
+            # back to added_at for them. See _build_filter in fetch_api/jobs.py.
+            posted_at = _posted_at_from_age(days_ago) if days_ago is not None else None
 
             slug = external_path.rstrip("/").rsplit("/", 1)[-1] if external_path else ""
             source_id = f"wd_{company['name'].lower().replace(' ', '')}_{slug}"
@@ -106,7 +111,7 @@ def fetch_workday_jobs(company: dict) -> list[dict]:
     if not all_listings:
         return []
 
-    print(f"  -> {len(all_listings)} listings (within {MAX_AGE_DAYS} days)")
+    print(f"  -> {len(all_listings)} listings (within {RETENTION_DAYS} days)")
 
     # Return raw jobs — process_jobs_batch handles enrichment via the shared pipeline.
     # Workday's search API doesn't return descriptions; detection_text = title + location

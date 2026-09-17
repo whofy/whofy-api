@@ -2,11 +2,8 @@ from datetime import datetime
 import time
 
 import requests
-from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
-from listings.shared.normalize import full_text, strip_html
 from listings.shared.rate_limiter import TokenBucket
 from listings.shared.storage import save_jobs
-from listings.shared.tech_filter import filter_tech_jobs
 from config.settings import settings
 
 ADZUNA_APP_ID = settings.adzuna_app_id
@@ -29,61 +26,20 @@ COUNTRIES = ["in", "us", "gb", "ca", "au", "de", "fr", "nl", "br", "sg", "nz", "
 
 SEARCH_QUERIES = [
     "software engineer",
-    "software developer",
     "frontend developer",
     "backend developer",
     "fullstack developer",
     "data engineer",
     "data scientist",
-    "devops engineer",
-    "cloud engineer",
     "machine learning engineer",
-    "QA engineer",
+    "devops engineer",
     "mobile developer",
-    "UI UX designer",
-    "product manager",
-    "cybersecurity analyst",
-    "systems engineer",
-    "web developer",
-    "python developer",
-    "java developer",
-    "react developer",
-    "golang developer",
-    "rust developer",
-    "iOS developer",
-    "android developer",
-    "site reliability engineer",
-    "data analyst",
-    "database administrator",
-    "network engineer",
-    "blockchain developer",
-    "AI engineer",
-    "MLOps engineer",
-    "platform engineer",
-    "cloud architect",
-    "solutions architect",
-    "infrastructure engineer",
     "security engineer",
-    "embedded engineer",
-    "firmware engineer",
-    "technical lead",
+    "site reliability engineer",
+    "product manager",
+    "UI UX designer",
     "engineering manager",
-    "scrum master",
-    "technical program manager",
-    "data architect",
-    "ETL developer",
-    "automation engineer",
-    "DevSecOps",
-    "Kubernetes engineer",
-    "AWS engineer",
-    "Azure engineer",
-    "SAP consultant",
-    "Salesforce developer",
-    "ServiceNow developer",
-    "ERP developer",
-    "business intelligence",
-    "power BI developer",
-    "tableau developer",
+    "QA engineer",
 ]
 
 HEADERS = {
@@ -166,7 +122,7 @@ def fetch_adzuna_jobs(country: str, query: str, max_pages: int = 10) -> list[dic
 
 def _fetch_wrapper(country, query):
     try:
-        return fetch_adzuna_jobs(country, query, max_pages=3)
+        return fetch_adzuna_jobs(country, query, max_pages=1)
     except RateLimitExhausted:
         return None
 
@@ -201,6 +157,11 @@ def main(mp_executor=None):
 
             if jobs is None:
                 print("  Stopping early — saving what we have so far. The 24h scheduler will top up next run.")
+                # Drop the queued (country, query) tasks. Without this, the
+                # `with` block's shutdown(wait=True) still runs every one of
+                # them — each burning 2s+4s+8s of retry backoff against a
+                # quota we already know is dead.
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
             print(f"Fetched Adzuna jobs ({c.upper()}, '{q}') -> {len(jobs)} jobs")
@@ -210,11 +171,9 @@ def main(mp_executor=None):
                     all_jobs.append(job)
 
             if len(all_jobs) >= RAW_JOB_CAP:
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
-    import time
-    t_start = time.time()
-    
     print(f"\nTotal unique jobs fetched: {len(all_jobs)}")
 
     print("Running process_jobs_batch (enrichment + filtering)...")
@@ -222,8 +181,7 @@ def main(mp_executor=None):
     accepted_jobs = batch_result["accepted"]
     tech_filtered = batch_result["tech_filtered"]
     lang_filtered = batch_result["lang_filtered"]
-    
-    t_filter = time.time()
+
     print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
     print(f"Filtered (Tech): {tech_filtered}")
     print(f"Filtered (Lang): {lang_filtered}")

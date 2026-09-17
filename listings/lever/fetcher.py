@@ -1,10 +1,7 @@
-from datetime import datetime
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from listings.shared.enrich import bake_required_skills, detect_experience, detect_work_type, extract_required_skills
 from listings.shared.normalize import extract_bullets, first_paragraph
 from listings.shared.storage import save_jobs
-from listings.shared.tech_filter import filter_tech_jobs
 
 LEVER_API = "https://api.lever.co/v0/postings/{company}?mode=json"
 
@@ -90,9 +87,6 @@ def main(mp_executor=None):
             except Exception as e:
                 print(f"Error processing {company['name']}: {e}")
 
-    import time
-    t_start = time.time()
-    
     print(f"\nTotal jobs fetched: {len(all_jobs)}")
 
     print("Running process_jobs_batch (enrichment + filtering)...")
@@ -100,8 +94,7 @@ def main(mp_executor=None):
     accepted_jobs = batch_result["accepted"]
     tech_filtered = batch_result["tech_filtered"]
     lang_filtered = batch_result["lang_filtered"]
-    
-    t_filter = time.time()
+
     print(f"After MP enrichment/filter: {len(accepted_jobs)} accepted")
     print(f"Filtered (Tech): {tech_filtered}")
     print(f"Filtered (Lang): {lang_filtered}")

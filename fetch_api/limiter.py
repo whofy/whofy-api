@@ -4,8 +4,12 @@ from fastapi import Request, HTTPException
 
 def get_user_or_ip(request: Request) -> str:
     """
-    Returns the user ID if a valid JWT is present, fully verified via Clerk JWKS.
+    Returns the user ID if a valid JWT is present, fully verified via Supabase's JWKS.
     Falls back to remote IP for public unauthenticated requests.
+
+    get_current_user memoizes its result on request.state, so on endpoints that
+    also declare Depends(get_current_user) the token is verified once per
+    request, not once here and again there.
     """
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):

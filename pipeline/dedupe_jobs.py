@@ -47,7 +47,6 @@ SOURCE_PRIORITY = {
     "weworkremotely": 7,
     "remoteok":   8,
     "adzuna":     9,
-    "linkedin":   10,
 }
 
 _UNKNOWN_SOURCE_PRIORITY = 99
@@ -88,10 +87,24 @@ def backfill_missing_fingerprints(db) -> int:
     return written
 
 
-def dedupe(db) -> tuple[int, int]:
+def dedupe(db, dry_run: bool = False) -> tuple[int, int]:
     """
     Find groups of jobs sharing the same canonical_fingerprint, keep the
     highest-priority-source copy, delete the rest. Returns (groups, deleted).
+
+    CROSS-SOURCE ONLY. canonical_fingerprint is normalized(company + title +
+    location) — it carries no notion of *which posting* a row is. A large
+    employer routinely has several distinct open requisitions with the same
+    title in the same location (different teams, different reqs, different
+    apply URLs), and on a single board those are separate jobs with separate
+    source_job_ids. Grouping on the fingerprint alone treated them as
+    duplicates and deleted all but one — every night, re-deleting them after
+    each ingestion re-added them.
+
+    So a group only qualifies when it spans 2+ sources, and within a
+    qualifying group we only delete rows from the *losing* sources. Rows
+    sharing the winner's source are left alone: that source already told us
+    they're distinct postings by giving them distinct ids.
     """
     pipeline = [
         {"$match": {"canonical_fingerprint": {"$exists": True, "$ne": ""}}},
@@ -103,8 +116,14 @@ def dedupe(db) -> tuple[int, int]:
                 "last_seen_at": "$last_seen_at",
             }},
             "count": {"$sum": 1},
+            "sources": {"$addToSet": "$source"},
         }},
-        {"$match": {"count": {"$gt": 1}}},
+        # count > 1 alone is not enough — that also matches intra-source
+        # groups, which are legitimately distinct jobs.
+        {"$match": {
+            "count": {"$gt": 1},
+            "$expr": {"$gt": [{"$size": "$sources"}, 1]},
+        }},
     ]
 
     to_delete: list = []
@@ -124,14 +143,22 @@ def dedupe(db) -> tuple[int, int]:
             return (src_pri, last_seen_ts)
 
         docs.sort(key=_key)
-        # docs[0] is the winner. All others get deleted.
+        # docs[0] is the winner. Everything from a DIFFERENT source is a
+        # cross-source duplicate and gets deleted; anything sharing the
+        # winner's source is a separate requisition and stays.
+        winner_source = docs[0].get("source")
         for loser in docs[1:]:
-            to_delete.append(loser["_id"])
+            if loser.get("source") != winner_source:
+                to_delete.append(loser["_id"])
 
     if not to_delete:
         return groups, 0
 
-    print(f"Found {groups} duplicate groups; removing {len(to_delete)} redundant rows...")
+    if dry_run:
+        print(f"[dry-run] {groups} cross-source groups; would remove {len(to_delete)} rows. Nothing written.")
+        return groups, 0
+
+    print(f"Found {groups} cross-source duplicate groups; removing {len(to_delete)} redundant rows...")
     chunk_size = 1000
     deleted = 0
     for i in range(0, len(to_delete), chunk_size):
@@ -142,13 +169,22 @@ def dedupe(db) -> tuple[int, int]:
     return groups, deleted
 
 
-def main():
+def main(dry_run: bool = False):
     db = get_db()
     total_before = db.jobs.count_documents({})
     print(f"Total jobs before dedupe: {total_before}")
+    if dry_run:
+        print("DRY RUN — no documents will be deleted.")
 
-    backfill_missing_fingerprints(db)
-    groups, deleted = dedupe(db)
+    if dry_run:
+        # The backfill writes, so it's skipped here. Legacy docs without a
+        # fingerprint simply won't appear in the dry-run grouping.
+        missing = db.jobs.count_documents({"canonical_fingerprint": {"$exists": False}})
+        print(f"[dry-run] skipping backfill of {missing} legacy docs (writes disabled)")
+    else:
+        backfill_missing_fingerprints(db)
+
+    groups, deleted = dedupe(db, dry_run=dry_run)
 
     total_after = db.jobs.count_documents({})
     print(f"\nDedupe summary:")
@@ -160,4 +196,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Default stays destructive so the CI workflow is unchanged; pass
+    # --dry-run to see what would be removed without writing.
+    main(dry_run="--dry-run" in sys.argv)

@@ -1,4 +1,3 @@
-import re
 import warnings
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
@@ -7,12 +6,12 @@ import requests
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
 from listings.shared.pipeline import process_jobs_batch
+from listings.shared.retention import RETENTION_DAYS
 from listings.shared.storage import save_jobs
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 RSS_URL = "https://weworkremotely.com/remote-jobs.rss"
-MAX_AGE_DAYS = 30
 
 HEADERS = {
     "User-Agent": "Whofy Job Aggregator (contact: whofyteam@gmail.com)"
@@ -41,7 +40,7 @@ def _is_within_age(posted_at: str) -> bool:
     if not posted_at:
         return False
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
         posted = datetime.fromisoformat(posted_at)
         if posted.tzinfo is None:
             posted = posted.replace(tzinfo=timezone.utc)
@@ -110,7 +109,7 @@ def fetch_wwr_jobs() -> list[dict]:
         })
 
     if skipped_old:
-        print(f"  -> {skipped_old} jobs skipped (older than {MAX_AGE_DAYS} days)")
+        print(f"  -> {skipped_old} jobs skipped (older than {RETENTION_DAYS} days)")
 
     return normalized
 
