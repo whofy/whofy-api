@@ -8,3 +8,12 @@ scratch/
 
 
 test_resume/
+
+# Claude Code local tooling (kept locally, not committed)
+.claude/
+
+# Internal audit reports (kept locally, not committed)
+docs/AUDIT.md
+docs/AUDIT_DATA_POINTS.md
+docs/CODE_REVIEW_ARCHITECTURE_AUDIT.md
+docs/PARSING_AUDIT.md

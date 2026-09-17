@@ -1,4 +1,3 @@
-import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -14,6 +13,7 @@ from fetch_api.limiter import limiter
 
 from fetch_api.jobs import router as jobs_router
 from fetch_api.saved_jobs import router as saved_jobs_router
+from fetch_api.account import router as account_router
 from parsing.resume import router as resume_router
 from chatbot.router import router as chat_router
 @asynccontextmanager
@@ -26,6 +26,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Whofy API", lifespan=lifespan)
 app.include_router(jobs_router)
 app.include_router(saved_jobs_router)
+app.include_router(account_router)
 app.include_router(resume_router)
 app.include_router(chat_router)
 
@@ -68,14 +69,16 @@ async def ready(request: Request):
         checks["mongodb"] = f"fail: {type(e).__name__}: {e}"
 
     try:
-        from fetch_api.auth import _fetch_jwks
-        jwks = await asyncio.to_thread(_fetch_jwks)
-        if not jwks.get("keys"):
-            checks["clerk_jwks"] = "fail: empty keys list"
+        import httpx
+        jwks_url = settings.supabase_jwks_url
+        if not jwks_url:
+            checks["supabase_auth"] = "fail: SUPABASE_URL not configured"
         else:
-            checks["clerk_jwks"] = "ok"
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(jwks_url)
+            checks["supabase_auth"] = "ok" if resp.status_code == 200 else f"fail: status {resp.status_code}"
     except Exception as e:
-        checks["clerk_jwks"] = f"fail: {type(e).__name__}: {e}"
+        checks["supabase_auth"] = f"fail: {type(e).__name__}: {e}"
 
     all_ok = all(v == "ok" for v in checks.values())
     body = {"status": "ready" if all_ok else "not_ready", "checks": checks}
