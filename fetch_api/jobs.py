@@ -15,7 +15,7 @@ router = APIRouter()
 # Short-TTL in-memory cache for the dropdown endpoints
 # (/api/locations, /api/sources). These run distinct() over
 # ~49k jobs on every call and return data that only changes when ingestion
-# runs (once a day) — a 5-minute stale window is invisible to users.
+# runs (once a week) — a 5-minute stale window is invisible to users.
 _DROPDOWN_CACHE: dict[str, tuple[float, object]] = {}
 _DROPDOWN_TTL_SECONDS = 300
 
