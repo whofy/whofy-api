@@ -4,7 +4,7 @@
 
 ### We hunt opportunity for you.
 
-The backend that powers Whofy — a FastAPI service that ingests thousands of live tech jobs daily, parses resumes with an LLM, and ranks matches for each user.
+The backend that powers Whofy — a FastAPI service that ingests thousands of live tech jobs every week, parses resumes with an LLM, and ranks matches for each user.
 
 **[Live demo → whofy.vercel.app](https://whofy.vercel.app)**
 
@@ -23,7 +23,7 @@ The backend that powers Whofy — a FastAPI service that ingests thousands of li
 
 **Whofy** turns a resume into a ranked job shortlist. This service is responsible for three things:
 
-1. **Aggregating jobs** — a pipeline pulls live tech roles from company career pages and job boards, normalizes and de-duplicates them, and stores them in MongoDB (refreshed daily, expired after 14 days).
+1. **Aggregating jobs** — a pipeline pulls live tech roles from company career pages and job boards, normalizes and de-duplicates them, and stores them in MongoDB (refreshed weekly, expired after 14 days).
 2. **Parsing resumes** — an uploaded PDF/DOCX is text-extracted and sent to a Groq LLM, which returns the candidate's skills, location, and experience level.
 3. **Matching** — the extracted skills are scored against the job corpus and returned ranked, with server-side filtering, search, and per-user saved jobs.
 
@@ -31,7 +31,7 @@ The backend that powers Whofy — a FastAPI service that ingests thousands of li
 
 ```mermaid
 flowchart TB
-    subgraph ingest ["Ingestion (scheduled daily)"]
+    subgraph ingest ["Ingestion (scheduled weekly)"]
       SRC["Greenhouse, Lever, Ashby, RemoteOK,<br/>Himalayas, Adzuna, Workday, WWR, HN"] --> NORM["normalize + tech-filter + dedupe"]
       NORM --> RET["retention: drop jobs unseen 14 days"]
       RET --> DB[("MongoDB")]

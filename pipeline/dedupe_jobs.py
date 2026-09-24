@@ -7,7 +7,7 @@ in the `jobs` collection. This script groups by `canonical_fingerprint`,
 keeps ONE canonical copy per group (from the highest-priority source),
 and deletes the rest.
 
-Runs automatically after every daily ingestion via the GitHub Actions
+Runs automatically after every weekly ingestion via the GitHub Actions
 workflow. Also runnable manually:
 
     uv run python pipeline/dedupe_jobs.py
