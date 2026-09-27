@@ -16,7 +16,7 @@ Not tested here:
 
 import responses
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 REQUIRED_KEYS = {"source", "source_job_id", "title", "company", "location", "apply_url"}
@@ -255,14 +255,15 @@ def test_himalayas_parses_payload():
 
 @responses.activate
 def test_weworkremotely_parses_rss():
-    rss_body = """<?xml version="1.0"?>
+    pub_date = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    rss_body = f"""<?xml version="1.0"?>
     <rss><channel>
       <item>
         <title>Awesome Company: Senior React Developer</title>
         <link>https://weworkremotely.com/remote-jobs/awesome-react-dev</link>
         <guid>https://weworkremotely.com/remote-jobs/awesome-react-dev</guid>
         <region>Worldwide</region>
-        <pubDate>Fri, 05 Aug 2026 12:00:00 GMT</pubDate>
+        <pubDate>{pub_date}</pubDate>
         <description>&lt;p&gt;Join our React team building great products.&lt;/p&gt;</description>
       </item>
     </channel></rss>"""
