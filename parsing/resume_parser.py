@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB (aligned with frontend)
-PARSE_MODEL = "openai/gpt-oss-120b"
+PARSE_MODEL = "qwen/qwen3.8-27b"
 GROQ_TIMEOUT = 30
 MAX_CONCURRENT_LLM = 3
 

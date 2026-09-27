@@ -5,7 +5,7 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-CHAT_MODEL = "openai/gpt-oss-20b"
+CHAT_MODEL = "qwen/qwen3.8-27b"
 
 SYSTEM_PROMPT = """You are Whofy Assistant — a chatbot embedded in a job-matching platform called Whofy.
 
